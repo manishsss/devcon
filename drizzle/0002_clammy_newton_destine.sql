@@ -1,0 +1,1 @@
+ALTER TABLE `payments` ADD `slot_id` integer;

@@ -1,0 +1,22 @@
+[
+  {
+    "date": "2026-10-04",
+    "page": "landing",
+    "macrostructure": "Long-Scroll Narrative",
+    "nav": "existing compact campaign bar",
+    "hero": "existing split product object",
+    "footer": "existing minimal campaign footer",
+    "knobs": "deliverables=numbered-2x2-rules; faq=compact-single-open-accordion",
+    "brief": "Devcon sponsorship deliverables and FAQ refinement"
+  },
+  {
+    "date": "2026-10-05",
+    "page": "landing-and-admin",
+    "macrostructure": "Long-Scroll Narrative",
+    "nav": "compact campaign bar",
+    "hero": "split product object",
+    "footer": "minimal campaign footer",
+    "knobs": "auction=server-clock-band; slots=dual-price-editorial-grid; admin=immutable-claim-ledger",
+    "brief": "Four-day escalating Devcon spot auction"
+  }
+]

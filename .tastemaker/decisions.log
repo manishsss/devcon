@@ -1,0 +1,20 @@
+2026-10-04 | kept | color | elegant light palette | User chose cream, bronze and olive over the previous premium blue palette.
+2026-10-04 | rejected | color | bronze and olive elegant palette | User said it felt too fashion/lifestyle editorial for the Devcon campaign.
+2026-10-04 | kept | color | exact cream, near-black, deep purple and burnt orange system | User specified an independent Web3 editorial direction with Ethereum-builder cues and restrained accents.
+2026-10-04 | rejected | color | purple as a secondary brand accent | User requested purple and blue be removed completely from every visible state.
+2026-10-04 | kept | color | cream, near-black, burnt orange and neutral border only | User specified a 70/25/5 editorial balance and orange as the sole accent.
+2026-10-04 | kept | checkout | two-step editorial sponsorship flow with persistent slot summary | User required sponsor details followed by Base USDC payment without changing the campaign structure.
+2026-10-04 | kept | motion | real-state-only payment feedback and one subtle confirming pulse | User prohibited fake progress and requested restrained animation.
+2026-10-04 | kept | operations | flat protected admin records with fixed pricing and explicit review/refund actions | The dashboard must expose operational detail without resembling a generic crypto dashboard.
+2026-10-04 | rejected | structure | abstract three-column benefits and separate personal story sections | User replaced both with a direct founder-facing explanation of the sponsorship package.
+2026-10-04 | kept | structure | four numbered deliverables followed by a compact accordion FAQ | User requested immediate clarity on the exact sponsor package, payment method, capacity and refund threshold.
+2026-10-05 | kept | logic | exact four-day 1.5x spot-claim mechanism with current-holder protection | User explicitly replaced permanent slot sales with server-timed escalating claims, confirmed-payment holder swaps and full outbid refunds.
+2026-10-05 | kept | color | cream, near-black and restrained orange auction states | The new auction information extends the locked palette without adding status hues, gradients or dashboard-like crypto styling.
+2026-10-05 | pending-review | structure | server-clock band and dual-price editorial slot cards | This is the first completed visual treatment of the requested current-price versus next-claim hierarchy and awaits the user's visual review.
+
+2026-10-08 | kept | interaction | preserve original cream/orange with one-click persistent theme switch | User explicitly requested a recoverable previous theme.
+2026-10-08 | pending-review | color | elegant dark charcoal, ivory and muted gold | User requested elegant dark; exact treatment awaits visual review. No global preference promotion.
+2026-10-08 | kept | color | user-specified refined dark tokens and white shirt placeholder | Explicit visual refinement request; original light palette and all business behavior preserved.
+2026-10-08 | rejected | color | elegant dark theme | User requested return to original white/cream style.
+2026-10-08 | kept | color | original cream/black/orange with black shirt restored | Explicit user request; no business logic rollback.
+2026-10-09 | pending-review | color | burgundy accent trial with one-click original orange restoration | User requested reversible trial.

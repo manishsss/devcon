@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import ts from 'typescript';
+const source=readFileSync('lib/payment.ts','utf8').split('export async function discoverPayment')[1].split('export async function monitorPayments')[0];
+const js=ts.transpile('async function discoverPayment'+source,{target:ts.ScriptTarget.ES2022});
+const topic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const treasury='0x'+'1'.repeat(40),wallet='0x'+'2'.repeat(40),token='0x'+'3'.repeat(40),hash='0x'+'4'.repeat(64);
+const row={chain_id:8453,token_contract:token,wallet_address:wallet,amount_units:'350000000',payment_id:'new',verification_config:JSON.stringify({treasury,startBlock:100,scanBlock:100})};
+let logs=[],used=null,chain=8453,cursor;
+const db=()=>({prepare:()=>({bind:(...args)=>({first:async()=>used,run:async()=>{cursor=JSON.parse(args[0]).scanBlock;}})})});
+const rpc=async(_,method,params)=>{
+ if(method==='eth_chainId')return chain;
+ if(method==='eth_blockNumber')return 111;
+ assert.equal(method,'eth_getLogs');
+ assert.deepEqual(params[0].topics,[topic,'0x'+wallet.slice(2).padStart(64,'0'),'0x'+treasury.slice(2).padStart(64,'0')]);
+ assert.equal(params[0].address,token);
+ assert.equal(params[0].fromBlock,'0x64');
+ return logs;
+};
+const discover=new Function('db','rpc','TRANSFER_TOPIC',js+';return discoverPayment;')(db,rpc,topic);
+logs=[{transactionHash:hash,data:'0x14dc9380'}];
+assert.equal(await discover(row),hash,'exact candidate is discovered without a pasted hash');
+logs=[{transactionHash:hash,data:'0x1'}];assert.equal(await discover(row),'','wrong amount ignored');
+logs=[{transactionHash:hash,data:'0x14dc9380',removed:true}];assert.equal(await discover(row),'','removed logs ignored');
+logs=[{transactionHash:hash,data:'0x14dc9380'}];used={id:'previous'};assert.equal(await discover(row),'','previously used transaction ignored');
+used=null;logs=[];assert.equal(await discover(row),'');assert.equal(cursor,100,'tip replay protects against short reorgs');
+chain=1;await assert.rejects(()=>discover(row),/different chain/);
+console.log('7 automatic payment discovery checks passed.');

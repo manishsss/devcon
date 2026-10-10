@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `payments_refund_transaction_hash_unique` ON `payments` (`refund_transaction_hash`);
