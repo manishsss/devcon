@@ -1,4 +1,12 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+export const checkoutAuthorizations=sqliteTable('checkout_authorizations',{
+  id:text('id').primaryKey(),
+  walletAddress:text('wallet_address').notNull(),
+  intentHash:text('intent_hash').notNull(),
+  message:text('message').notNull(),
+  expiresAt:integer('expires_at').notNull(),
+  consumedBy:text('consumed_by'),
+},t=>[index('idx_checkout_authorizations_expiry').on(t.expiresAt)]);
 export const slots=sqliteTable('slots',{
   id:integer('id').primaryKey(),
   price:integer('price').notNull(),

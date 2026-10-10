@@ -101,6 +101,7 @@ export default function Home() {
   const [data, setData] = useState<Inventory>(initialData);
   const [error, setError] = useState('');
   const [chosen, setChosen] = useState<Slot | null>(null);
+  const [previewSide, setPreviewSide] = useState<'front' | 'back'>('front');
 
   async function refresh() {
     try {
@@ -167,12 +168,19 @@ export default function Home() {
       </nav>
 
       <section className="hero wrap centered-portrait-hero">
-        <div className="shirt-stage">
+        <div className="shirt-stage" data-preview-side={previewSide}>
           <span className="shirt-limited mono">LIMITED / 08</span>
+          <div className="mobile-preview-controls">
+            <div className="preview-side-switch" role="group" aria-label="T-shirt side">
+              <button type="button" aria-pressed={previewSide==='front'} aria-controls="shirt-front" onClick={()=>setPreviewSide('front')}>FRONT <span>01–04</span></button>
+              <button type="button" aria-pressed={previewSide==='back'} aria-controls="shirt-back" onClick={()=>setPreviewSide('back')}>BACK <span>05–08</span></button>
+            </div>
+            <p>Tap a price to choose your spot.</p>
+          </div>
           <div className="portrait-pair">
           {['front', 'back'].map(side => (
-          <div key={side} className={`shirt-image portrait-preview ${side}`}>
-            <img src={side === 'front' ? '/manish-front-cutout.png' : '/manish-back-cutout.png'} width="1024" height="1536" alt={`Manish wearing the sponsorship T-shirt, ${side} placement preview`} />
+          <div key={side} id={`shirt-${side}`} className={`shirt-image portrait-preview ${side}`}>
+            <img src={side === 'front' ? '/manish-front-cutout.png' : '/manish-back-cutout.png'} width="1024" height="1536" decoding="async" fetchPriority={side==='front'?'high':'low'} alt={`Manish wearing the sponsorship T-shirt, ${side} placement preview`} />
             <div className="shirt-slots">
               {data.slots.filter(slot => side === 'front' ? slot.id <= 4 : slot.id > 4).map(slot => (
                 <button key={slot.id} className={`print-slot ${slot.status === 'HELD' ? 'held' : ''}`} disabled={!canOpenSlot(slot)} onClick={() => claim(slot)} aria-label={`Slot ${slot.id}, ${slot.position}, claim price $${slot.claimPrice}, ${slot.status}`}>

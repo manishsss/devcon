@@ -1,8 +1,9 @@
 export type PaymentToken = { symbol: 'USDC'; label: string; address: string; decimals: 6 };
+export const TREASURY_WALLET_ADDRESS = '0x7c7ddb2c72725563816d5adc7137043d831ebcbe';
 export type PaymentNetwork = { id: number; name: string; rpc: string; explorer: string; gas: string; confirmations: number; tokens: PaymentToken[] };
 const token=(symbol:'USDC',address:string,label:string=symbol):PaymentToken=>({symbol,label,address,decimals:6});
 
-// Issuer registries verified 2026-10-05:
+// Issuer registries verified 2026-10-10. Arc's ERC-20 interface uses 6 decimals.
 // https://developers.circle.com/stablecoins/usdc-contract-addresses
 // https://docs.arc.io/arc/references/connect-to-arc
 export const PAYMENT_NETWORKS:PaymentNetwork[]=[

@@ -47,3 +47,13 @@ Orange against cream is 2.91:1, so primary CTA buttons use the required orange f
 
 ## Burgundy trial
 2026-10-09: Burgundy #722F3E with cream labels replaces orange accents by default. Original orange #E9683A and its original dark labels preserved via semantic accent tokens. One-click per-browser persistent switch uses devcon-accent. Existing layout, content, prices and logic retained. Pale rose only for visible hover outlines on the black garment.
+
+## Mobile interaction
+
+2026-10-10: Preserve the current portrait assets and palette. Through 900px,
+show one enlarged torso at a time with a front/back pressed-button selector;
+keep both portraits on desktop. Shirt targets and checkout controls are at least
+44px. Narrow forms use 16px inputs, keyboard-aware viewport sizing, safe-area
+padding and a sticky close/progress header. At phone widths the palette switch
+belongs after the footer so it cannot cover campaign content. Payment amounts,
+verification and auction behavior are unchanged.

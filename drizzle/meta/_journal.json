@@ -50,6 +50,13 @@
       "when": 1791532722470,
       "tag": "0006_curious_echo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791636252147,
+      "tag": "0007_colossal_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }

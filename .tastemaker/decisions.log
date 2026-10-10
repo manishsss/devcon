@@ -18,3 +18,4 @@
 2026-10-08 | rejected | color | elegant dark theme | User requested return to original white/cream style.
 2026-10-08 | kept | color | original cream/black/orange with black shirt restored | Explicit user request; no business logic rollback.
 2026-10-09 | pending-review | color | burgundy accent trial with one-click original orange restoration | User requested reversible trial.
+2026-10-10 | pending-review | mobile | enlarged front/back portrait selector and keyboard-aware checkout | User requested mobile optimization. Existing assets, palette, auction and payment checks preserved; responsive treatment awaits visual review.

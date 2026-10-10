@@ -1,4 +1,25 @@
-# vinext-starter
+# Devcon sponsorship auction
+
+USDC payments on Base, Arc, Ethereum, Arbitrum and Polygon go directly to
+`0x7c7ddb2c72725563816d5adc7137043d831ebcbe`.
+The shirt logo changes only after server verification. The existing four-day
+auction, 1.5× outbids and refund rules are preserved.
+
+See [PAYMENTS.md](./PAYMENTS.md) for the payment design, deployment requirements,
+verification results and the remaining live wallet smoke test.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm test
+pnpm typecheck
+pnpm payments:check
+pnpm build
+```
+
+The security tests require Node.js 22.13+ with `node:sqlite` support (validated on
+Node.js 24). `payments:check` makes read-only mainnet RPC requests and never sends money.
+
+## Framework reference
 
 A clean full-stack starter running on [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and Drizzle support.
 

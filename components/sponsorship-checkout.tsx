@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect */
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Check, Copy, ExternalLink, ShieldCheck, Wallet } from 'lucide-react';
-import { PAYMENT_NETWORKS } from '@/lib/payment-networks';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, ExternalLink, ShieldCheck, Wallet, X } from 'lucide-react';
+import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-networks';
+import { stringToHex } from 'viem';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 type Slot = {
   id: number;
@@ -91,6 +92,41 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
   const [now, setNow] = useState(0);
+  const [paying,setPaying]=useState(false);
+  const [viewportStyle,setViewportStyle]=useState<CSSProperties>({});
+  const sending=useRef(false);
+  const submitting=useRef(false);
+  const checking=useRef(false);
+  const savedKey=slot?`devcon-checkout:${slot.id}`:'';
+
+  function remember(value: Reservation,hash='') {
+    try { sessionStorage.setItem(savedKey,JSON.stringify({reservation:value,tx:hash})); } catch { /* Checkout still works when storage is unavailable. */ }
+  }
+
+  useEffect(()=>{
+    if(!open)return;
+    const viewport=window.visualViewport;
+    let frame=0;
+    const update=()=>{
+      // Let pinch zoom behave normally; only follow keyboard/browser chrome changes.
+      if(viewport&&viewport.scale!==1)return;
+      setViewportStyle({
+        '--checkout-viewport-height':`${viewport?.height??window.innerHeight}px`,
+        '--checkout-viewport-top':`${viewport?.offsetTop??0}px`,
+      } as CSSProperties);
+    };
+    const schedule=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(update);};
+    update();
+    viewport?.addEventListener('resize',schedule);
+    viewport?.addEventListener('scroll',schedule);
+    window.addEventListener('resize',schedule);
+    return ()=>{
+      cancelAnimationFrame(frame);
+      viewport?.removeEventListener('resize',schedule);
+      viewport?.removeEventListener('scroll',schedule);
+      window.removeEventListener('resize',schedule);
+    };
+  },[open]);
 
   useEffect(() => {
     if (!open) return;
@@ -102,6 +138,15 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     setError('');
     setCopied('');
     setNow(Date.now());
+    try {
+      const saved=JSON.parse(sessionStorage.getItem(`devcon-checkout:${slot?.id}`)||'null');
+      if(saved?.reservation?.id&&saved.reservation.secret&&saved.reservation.treasury?.toLowerCase()===TREASURY_WALLET_ADDRESS&&PAYMENT_NETWORKS.some(item=>item.id===saved.reservation.chainId)){
+        setReservation(saved.reservation);
+        setTx(saved.tx||'');
+        setWallet(saved.reservation.wallet);
+        setVerification({status:saved.tx?'PAYMENT_DETECTED':'PENDING'});
+      }
+    } catch { /* Ignore an unavailable or invalid saved checkout. */ }
   }, [open, slot?.id]);
 
   useEffect(() => {
@@ -122,7 +167,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     setError('');
     try {
       const ethereum = (window as any).ethereum;
-      if (!ethereum) throw new Error('No browser wallet was detected. You can still pay manually with the verified details below.');
+      if (!ethereum) throw new Error('Open this site in your wallet’s browser or use a browser wallet to sign your checkout.');
       const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
       const account = String(accounts?.[0] || '');
       if (!account) throw new Error('Your wallet did not return an account.');
@@ -137,7 +182,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
   async function reserve(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!slot || !paymentsReady || !claimsOpen || !slot.canClaim) return;
+    if (!slot || !paymentsReady || !claimsOpen || !slot.canClaim || submitting.current) return;
     const form = event.currentTarget;
     const payload = new FormData(form);
     const logo = payload.get('logo') as File;
@@ -154,15 +199,27 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       return;
     }
     setBusy(true);
+    submitting.current=true;
     setError('');
     try {
       payload.set('slot', String(slot.id));
       payload.set('chainId',String(chainId));
       payload.set('token',selectedToken);
+      const ethereum=(window as any).ethereum;
+      if(!ethereum)throw new Error('Open this site in your wallet’s browser or use a browser wallet to sign your checkout.');
+      const accounts=await ethereum.request({method:'eth_requestAccounts'});
+      if(String(accounts?.[0]||'').toLowerCase()!==String(payload.get('wallet')).toLowerCase())throw new Error('Connect the payment wallet entered in your details.');
+      const challengeResponse=await fetch('/api/checkout/authorize',{method:'POST',body:payload});
+      const challenge=await challengeResponse.json() as {id:string;message:string;error?:string};
+      if(!challengeResponse.ok)throw new Error(challenge.error||'Unable to authorize checkout.');
+      const signature=await ethereum.request({method:'personal_sign',params:[stringToHex(challenge.message),accounts[0]]});
+      payload.set('authorization',challenge.id);
+      payload.set('signature',signature);
       const response = await fetch('/api/reserve', { method: 'POST', body: payload });
       const result: any = await response.json();
       if (!response.ok) throw new Error(result.error || 'The reservation could not be created.');
       setReservation(result);
+      remember(result);
       setWallet(result.wallet);
       setVerification({ status: 'PENDING' });
       setNow(Date.now());
@@ -170,11 +227,13 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       setError(caught?.message || 'The reservation could not be created.');
     } finally {
       setBusy(false);
+      submitting.current=false;
     }
   }
 
   async function verifyPayment(hash = tx) {
-    if (!reservation) return;
+    if (!reservation || checking.current) return;
+    checking.current=true;
     setBusy(true);
     setError('');
     try {
@@ -186,12 +245,13 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       const result: Verification & { error?: string } = await response.json();
       if (!response.ok) throw new Error(result.error || 'Payment verification is temporarily unavailable.');
       setVerification(result);
-      if (result.transactionHash) setTx(result.transactionHash);
+      if (result.transactionHash) { setTx(result.transactionHash);remember(reservation,result.transactionHash); }
       if (['CONFIRMED', 'LATE_CONFIRMED'].includes(result.status)) onConfirmed();
     } catch (caught: any) {
       setError(caught?.message || 'Payment verification is temporarily unavailable.');
     } finally {
       setBusy(false);
+      checking.current=false;
     }
   }
 
@@ -204,10 +264,12 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   }, [reservation?.id, tx, status, late]);
 
   async function payWithWallet() {
-    if (!reservation) return;
+    if (!reservation || sending.current || tx || ['PAYMENT_DETECTED','CONFIRMING','FAILED'].includes(status)) return;
+    sending.current=true;
+    setPaying(true);
     setError('');
     try {
-      if (!remaining) throw new Error('The reservation expired. Do not send funds; close this window and reserve again.');
+      if (reservation.reservedUntil-Date.now()<60000) throw new Error('Less than one minute remains. Do not send funds; start a new checkout when this reservation expires.');
       const ethereum = (window as any).ethereum;
       if (!ethereum) throw new Error('No browser wallet was detected. Use the manual payment details and paste the transaction hash.');
       const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
@@ -218,10 +280,21 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       if (currentChain !== reservation.chainId) {
         try {
           await ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: `0x${reservation.chainId.toString(16)}` }] });
-        } catch {
-          throw new Error(`Add or switch your wallet to ${reservation.chainName} mainnet (chain ID ${reservation.chainId}), then try again.`);
+        } catch (caught:any) {
+          if(caught?.code!==4902)throw new Error(`Switch your wallet to ${reservation.chainName} mainnet, then try again.`);
+          const target=PAYMENT_NETWORKS.find(item=>item.id===reservation.chainId)!;
+          await ethereum.request({method:'wallet_addEthereumChain',params:[{chainId:`0x${target.id.toString(16)}`,chainName:target.name,rpcUrls:[target.rpc],blockExplorerUrls:[new URL(target.explorer).origin],nativeCurrency:{name:target.gas,symbol:target.gas,decimals:18}}]});
+          await ethereum.request({method:'wallet_switchEthereumChain',params:[{chainId:`0x${target.id.toString(16)}`}]});
         }
       }
+      if(Number(await ethereum.request({method:'eth_chainId'}))!==reservation.chainId)throw new Error('The wallet is on the wrong payment network.');
+      const latestAccounts=await ethereum.request({method:'eth_accounts'});
+      if(String(latestAccounts?.[0]||'').toLowerCase()!==reservation.wallet.toLowerCase())throw new Error('Your wallet account changed. Reconnect the original payment wallet.');
+      // Recheck server state immediately before asking the wallet to send money.
+      const intentResponse=await fetch('/api/checkout/preflight',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:reservation.id,secret:reservation.secret})});
+      const intent=await intentResponse.json() as {treasury:string;priceUnits:string;chainId:number;tokenAddress:string;error?:string};
+      if(!intentResponse.ok)throw new Error(intent.error||'This checkout is no longer payable.');
+      if(intent.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS||intent.priceUnits!==reservation.priceUnits||intent.chainId!==reservation.chainId||intent.tokenAddress.toLowerCase()!==reservation.tokenAddress.toLowerCase())throw new Error('Payment details changed. Refresh the checkout before sending.');
       const units = BigInt(reservation.priceUnits);
       const data = `0xa9059cbb${reservation.treasury.slice(2).toLowerCase().padStart(64, '0')}${units.toString(16).padStart(64, '0')}`;
       const hash = await ethereum.request({
@@ -229,10 +302,14 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
         params: [{ from: account, to: reservation.tokenAddress, data, value: '0x0' }],
       });
       setTx(String(hash));
+      remember(reservation,String(hash));
       setVerification({ status: 'PAYMENT_DETECTED', transactionHash: String(hash) });
       await verifyPayment(String(hash));
     } catch (caught: any) {
       setError(caught?.message || 'The wallet transaction was not sent.');
+    } finally {
+      sending.current=false;
+      setPaying(false);
     }
   }
 
@@ -249,12 +326,15 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const explorerUrl = verification?.explorerUrl || (reservation && tx ? `${reservation.explorer}${tx}` : '');
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="checkout">
+    <Dialog open={open} onOpenChange={value=>{if(!paying&&!submitting.current)onOpenChange(value);}}>
+      <DialogContent className="checkout" style={viewportStyle} showCloseButton={false}>
+        <div className="checkout-header">
         <div className="checkout-progress" aria-label="Checkout progress">
           <span className={!reservation ? 'active' : 'complete'}><b>01</b> DETAILS</span>
           <i aria-hidden="true" />
           <span className={reservation ? 'active' : ''}><b>02</b> PAYMENT</span>
+        </div>
+        <DialogClose className="checkout-close" aria-label="Close checkout" disabled={paying||(!reservation&&busy)}><X size={20} aria-hidden="true" /></DialogClose>
         </div>
 
         {confirmed ? (
@@ -285,19 +365,19 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{PAYMENT_NETWORKS.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>PAYMENT TOKEN<select value={selectedToken} onChange={event=>setSelectedToken(event.target.value)}>{network.tokens.map(item=><option key={item.symbol} value={item.symbol}>{item.label}</option>)}</select></label>
                   <p className="field-note full">{network.tokens.length===1?'USDC only on this network. ':''}Gas is paid in {network.gas}. Refunds return the same token on the original payment network.</p>
-                  <label>PROJECT NAME *<input name="project" placeholder="Example Protocol" required maxLength={120} autoComplete="organization" /></label>
-                  <label>X / TWITTER HANDLE *<input name="x" placeholder="@example" pattern="@[A-Za-z0-9_]{1,15}" required maxLength={16} /></label>
-                  <label className="full">PROJECT WEBSITE <span>OPTIONAL</span><input name="website" type="url" placeholder="https://example.com" maxLength={300} /></label>
-                  <label>CONTACT NAME *<input name="contact" placeholder="John" required maxLength={120} autoComplete="name" /></label>
-                  <label>EMAIL *<input name="email" type="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" /></label>
-                  <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required spellCheck={false} /></label>
+                  <label>PROJECT NAME *<input name="project" placeholder="Example Protocol" required maxLength={120} autoComplete="organization" enterKeyHint="next" /></label>
+                  <label>X / TWITTER HANDLE *<input name="x" placeholder="@example" pattern="@[A-Za-z0-9_]{1,15}" required maxLength={16} autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
+                  <label className="full">PROJECT WEBSITE <span>OPTIONAL</span><input name="website" type="url" inputMode="url" placeholder="https://example.com" maxLength={300} autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
+                  <label>CONTACT NAME *<input name="contact" placeholder="John" required maxLength={120} autoComplete="name" enterKeyHint="next" /></label>
+                  <label>EMAIL *<input name="email" type="email" inputMode="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" autoCapitalize="none" spellCheck={false} enterKeyHint="next" /></label>
+                  <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                 </div>
                 <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `CONNECTED ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
                 <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
                 <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I understand that this is a sponsorship claim payment, not a donation. If another project later pays 1.5 times the current price before the deadline, I will be outbid and my confirmed payment will be eligible for a full refund.</span></label>
-                <p className="field-note">Continuing reserves this claim for up to 15 minutes or until the auction ends, whichever comes first. The server verifies the wallet, token, exact amount, destination, timing and confirmations.</p>
-                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? 'RESERVING…' : 'CONTINUE TO PAYMENT'}</button>
+                <p className="field-note">Sign a message to prove ownership of your payment wallet, then reserve for up to 15 minutes. The signature does not transfer funds. You need the full USDC amount on your chosen network before reserving.</p>
+                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? 'AUTHORIZE IN YOUR WALLET…' : 'SIGN & CONTINUE TO PAYMENT'}</button>
               </form>
             ) : (
               <div className="payment-step">
@@ -314,8 +394,9 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <Wallet size={17} /> {wallet ? `${connected ? 'CONNECTED' : 'WRONG WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET'}
                 </button>
                 {wallet && <div className="wallet-state"><span>Connected wallet</span><code>{wallet}</code></div>}
-                <button className="button primary checkout-primary" type="button" onClick={payWithWallet} disabled={!remaining || busy}>
-                  {busy ? 'CHECKING…' : `PAY $${reservation.price} ${reservation.token}`}
+                <div className="wallet-state"><span>Paid directly to Manish</span><code>{reservation.treasury}</code></div>
+                <button className="button primary checkout-primary" type="button" onClick={payWithWallet} disabled={remaining<60 || busy || paying || Boolean(tx) || status==='FAILED'}>
+                  {paying ? 'CONFIRM IN YOUR WALLET…' : tx ? 'PAYMENT SENT · VERIFYING' : `PAY $${reservation.price} ${reservation.token}`}
                 </button>
 
                 <details className="manual-payment">
@@ -331,7 +412,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                 </details>
 
                 <div className="verify-box">
-                  <label>TRANSACTION HASH<input value={tx} onChange={(event) => setTx(event.target.value)} placeholder="0x…" spellCheck={false} /></label>
+                  <label>TRANSACTION HASH<input value={tx} onChange={(event) => setTx(event.target.value)} placeholder="0x…" maxLength={66} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="done" /></label>
                   <button className="button slot-button" type="button" onClick={() => verifyPayment()} disabled={!tx || busy}>{busy ? 'VERIFYING…' : 'VERIFY PAYMENT'}</button>
                 </div>
 
@@ -340,6 +421,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <div><b>{statusLabel(visibleStatus)}</b><p>{visibleStatus === 'CONFIRMING' ? `${verification?.confirmations || 0} of ${verification?.required || 0} confirmations` : visibleStatus === 'EXPIRED' ? 'The claim reservation has been released. Close this window and reserve again before sending funds.' : verification?.message || 'Your payment is checked automatically. A transaction hash can also be provided if needed.'}</p></div>
                 </div>
                 <p className="payment-warning"><ShieldCheck size={16} /> Only send {reservation.tokenLabel || reservation.token} on {reservation.chainName} for this checkout. You will need {reservation.gas} on {reservation.chainName} for gas. Never share your seed phrase.</p>
+                {(!remaining||status==='FAILED')&&<button type="button" className="button slot-button" onClick={()=>{try{sessionStorage.removeItem(savedKey);}catch{}setReservation(null);setVerification(null);setTx('');onConfirmed();}}>START A NEW CHECKOUT</button>}
               </div>
             )}
             {error && <p className="error" role="alert">{error}</p>}
