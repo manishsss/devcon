@@ -2,7 +2,7 @@
 import { boundedRequest, requestBudget } from '@/lib/abuse';
 import { validateLogo } from '@/lib/logo-image';
 import { logoResponse } from '@/lib/logo-response';
-import { requireAdminOrigin } from '@/lib/admin-authorization';
+import { browserAdminConfig, requireAdminOrigin } from '@/lib/admin-authorization';
 import { maintenanceAuthorized } from '@/lib/payment-monitor';
 import { env } from 'cloudflare:workers';
 import {verifyPayment,verifyRefund,monitorPayments} from '@/lib/payment';
@@ -32,7 +32,7 @@ async function adminPayload(){
   const notifications=await db().prepare(`SELECT id,type,recipient,subject,status,last_error AS lastError,created_at AS createdAt,sent_at AS sentAt,sponsorship_id AS sponsorshipId
     FROM notifications ORDER BY created_at DESC LIMIT 100`).all();
   return {
-    config:await config(),
+    config:browserAdminConfig(await config()),
     slots:slots.results,
     claims:claims.results,
     notifications:notifications.results,
