@@ -1,0 +1,24 @@
+name: Payment monitoring
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: payment-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    if: vars.PAYMENT_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node scripts/payment-monitor.mjs
+        env:
+          PAYMENT_MONITOR_SITE_URL: ${{ vars.PAYMENT_MONITOR_SITE_URL }}
+          MAINTENANCE_TOKEN: ${{ secrets.PAYMENT_MAINTENANCE_TOKEN }}

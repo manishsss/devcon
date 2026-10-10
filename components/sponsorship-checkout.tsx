@@ -122,7 +122,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     setError('');
     try {
       const ethereum = (window as any).ethereum;
-      if (!ethereum) throw new Error('No browser wallet was detected. You can still pay manually with the verified details below.');
+      if (!ethereum) throw new Error('No browser wallet was detected. Connect a browser wallet to sign your reservation.');
       const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
       const account = String(accounts?.[0] || '');
       if (!account) throw new Error('Your wallet did not return an account.');
@@ -142,15 +142,15 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     const payload = new FormData(form);
     const logo = payload.get('logo') as File;
     if (!logo?.size) {
-      setError('Upload a PNG, JPG or static SVG logo.');
+      setError('Upload a PNG or JPG logo.');
       return;
     }
     if (logo.size > 5 * 1024 * 1024) {
       setError('Logo must be under 5 MB.');
       return;
     }
-    if (!['image/png', 'image/jpeg', 'image/svg+xml'].includes(logo.type)) {
-      setError('Use a PNG, JPG or static SVG logo.');
+    if (!['image/png', 'image/jpeg'].includes(logo.type)) {
+      setError('Use a PNG or JPG logo.');
       return;
     }
     setBusy(true);
@@ -159,6 +159,18 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       payload.set('slot', String(slot.id));
       payload.set('chainId',String(chainId));
       payload.set('token',selectedToken);
+      const ethereum = (window as any).ethereum;
+      if (!ethereum) throw new Error('Connect a browser wallet to sign your reservation before paying.');
+      const accounts = await ethereum.request({method:'eth_requestAccounts'});
+      const account = String(accounts?.[0]||'');
+      if(account.toLowerCase()!==String(payload.get('wallet')||'').trim().toLowerCase())throw new Error('Connect the wallet entered in your sponsor details.');
+      const challengeResponse=await fetch('/api/reservation-challenge',{method:'POST',body:payload});
+      const challenge:any=await challengeResponse.json();
+      if(!challengeResponse.ok)throw new Error(challenge.error||'Could not prepare wallet authorization.');
+      const encoded='0x'+Array.from(new TextEncoder().encode(challenge.message)).map(x=>x.toString(16).padStart(2,'0')).join('');
+      const signature=await ethereum.request({method:'personal_sign',params:[encoded,account]});
+      payload.set('challengeId',challenge.id);
+      payload.set('signature',String(signature));
       const response = await fetch('/api/reserve', { method: 'POST', body: payload });
       const result: any = await response.json();
       if (!response.ok) throw new Error(result.error || 'The reservation could not be created.');
@@ -293,7 +305,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required spellCheck={false} /></label>
                 </div>
                 <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `CONNECTED ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
-                <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
+                <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg" required /><span>PNG or JPG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
                 <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I understand that this is a sponsorship claim payment, not a donation. If another project later pays 1.5 times the current price before the deadline, I will be outbid and my confirmed payment will be eligible for a full refund.</span></label>
                 <p className="field-note">Continuing reserves this claim for up to 15 minutes or until the auction ends, whichever comes first. The server verifies the wallet, token, exact amount, destination, timing and confirmations.</p>

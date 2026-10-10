@@ -1,8 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { boundedRequest, requestBudget } from '@/lib/abuse';
+import { validateLogo } from '@/lib/logo-image';
+import { logoResponse } from '@/lib/logo-response';
+import { requireAdminOrigin } from '@/lib/admin-authorization';
+import { maintenanceAuthorized } from '@/lib/payment-monitor';
 import { env } from 'cloudflare:workers';
 import {verifyPayment,verifyRefund,monitorPayments} from '@/lib/payment';
 import {admin,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
 import {AUCTION_DURATION_MS,USDC_SCALE,claimPriceUnits,formatUsdcUnits,initialPriceUnits} from '@/lib/auction';
+import { reservationDigest, reservationMessage, verifyReservationSignature } from '@/lib/reservation-auth';
 import { paymentRail } from '@/lib/payment-networks';
 
 export const dynamic='force-dynamic';
@@ -10,21 +16,6 @@ const json=(value:any,status=200)=>Response.json(value,{status,headers:{'Cache-C
 const sameOrigin=(request:Request)=>{const origin=request.headers.get('origin');return !origin||new URL(origin).origin===new URL(request.url).origin;};
 const normalizeUrl=(value:string)=>value&&!/^https?:\/\//i.test(value)?'https://'+value:value;
 const displayUnits=(units:bigint)=>formatUsdcUnits(units,units%USDC_SCALE===BigInt(0)?0:2);
-
-async function validateLogo(file:File,maxUploadMB:number){
-  if(!file||!file.size)throw new Error('Upload a PNG, JPG or SVG logo.');
-  if(file.size>maxUploadMB*1048576)throw new Error(`Logo must be under ${maxUploadMB} MB.`);
-  const bytes=new Uint8Array(await file.arrayBuffer());
-  let mime='';
-  if(bytes[0]===137&&bytes[1]===80&&bytes[2]===78&&bytes[3]===71)mime='image/png';
-  else if(bytes[0]===255&&bytes[1]===216&&bytes[2]===255)mime='image/jpeg';
-  else{
-    const svg=new TextDecoder().decode(bytes);
-    if(!/^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/i.test(svg)||/<(script|foreignObject|iframe|image|use|style|a)\b|\bon\w+\s*=|href\s*=|url\s*\(|<!DOCTYPE|<!ENTITY/i.test(svg))throw new Error('Use a static SVG without links, scripts or embedded resources.');
-    mime='image/svg+xml';
-  }
-  return {bytes,mime};
-}
 
 async function adminPayload(){
   await monitorPayments();
@@ -54,7 +45,17 @@ async function route(request:Request,context:any){
   try{
     const {path}=await context.params;
     const endpoint=path.join('/');
+    if(['reserve','reservation-challenge'].includes(endpoint)){await requestBudget(db(),request,endpoint,12);request=await boundedRequest(request);}
+    else if(endpoint==='verify'){await requestBudget(db(),request,'verify',30);request=await boundedRequest(request,8192);}
+    else if(endpoint==='inventory')await requestBudget(db(),request,'inventory',30);
+    else if(request.method!=='GET')request=await boundedRequest(request,6*1048576);
+    if(endpoint.startsWith('admin')&&request.method!=='GET')requireAdminOrigin(request);
     if(request.method!=='GET'&&!sameOrigin(request))return json({error:'Invalid request origin.'},403);
+
+    if(request.method==='POST'&&endpoint==='maintenance/monitor'){
+      if(!maintenanceAuthorized(request,(env as any).MAINTENANCE_TOKEN))return json({error:'Unauthorized.'},403);
+      return json(await monitorPayments());
+    }
 
     if(request.method==='GET'&&endpoint==='inventory'){
       await monitorPayments();
@@ -71,7 +72,7 @@ async function route(request:Request,context:any){
       if(!sponsor)return json({error:'Logo unavailable.'},404);
       const object=await (env as any).BUCKET.get(sponsor.logo_url);
       if(!object)return json({error:'Logo unavailable.'},404);
-      return new Response(object.body,{headers:{'Content-Type':object.httpMetadata?.contentType||'image/png','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox"}});
+      return logoResponse(object);
     }
 
     if(path[0]==='admin-logo'){
@@ -81,8 +82,9 @@ async function route(request:Request,context:any){
       if(request.method==='GET'){
         const object=await (env as any).BUCKET.get(sponsor.logo_url);
         if(!object)return json({error:'Logo unavailable.'},404);
-        return new Response(object.body,{headers:{'Content-Type':object.httpMetadata?.contentType||'image/png','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox"}});
+        return logoResponse(object);
       }
+      await requestBudget(db(),request,'admin-upload',12);
       const current=await config(),form=await request.formData(),file=form.get('logo') as File;
       const {bytes,mime}=await validateLogo(file,current.maxUploadMB);
       await (env as any).BUCKET.put(sponsor.logo_url,bytes,{httpMetadata:{contentType:mime}});
@@ -92,6 +94,14 @@ async function route(request:Request,context:any){
 
     if(endpoint.startsWith('admin')){
       await admin();
+      if(endpoint==='admin/reconcile'&&request.method==='POST'){
+        const body:any=await request.json();
+        const row:any=await db().prepare('SELECT sp.id,sp.secret FROM sponsorships sp JOIN payments p ON p.sponsorship_id=sp.id WHERE p.id=?').bind(String(body.paymentId||'')).first();
+        if(!row)throw new Error('Payment unavailable.');
+        return json(await verifyPayment({id:row.id,secret:row.secret,tx:body.tx}));
+      }
+      if(endpoint==='admin/monitoring' &&request.method==='GET'){const rows=await db().prepare('SELECT id,status,verification_error,verification_checked_at,verification_next_at,verification_attempts,verification_lock_until,reconciliation_status FROM payments WHERE verification_error IS NOT NULL OR verification_lock IS NOT NULL OR reconciliation_status IS NOT NULL ORDER BY verification_checked_at DESC LIMIT 100').all();return json({failures:rows.results});}
+      if(endpoint==='admin/auth-check'&&request.method==='GET')return json({authorized:true});
       await initialize();
       await settleCampaign();
       if(request.method==='GET')return json(await adminPayload());
@@ -156,6 +166,22 @@ async function route(request:Request,context:any){
       return json({error:'Admin action not found.'},404);
     }
 
+    if(request.method==='POST'&&endpoint==='reservation-challenge'){
+      await initialize();
+      const campaign:any=await settleCampaign();
+      if(campaign?.status!=='LIVE'||Date.now()>=campaign.ends_at)throw new Error('The auction is not live.');
+      const form=await request.formData(),slotNumber=Number(form.get('slot')),wallet=String(form.get('wallet')||'').trim().toLowerCase();
+      if(!/^0x[0-9a-f]{40}$/.test(wallet)||!Number.isInteger(slotNumber)||slotNumber<1||slotNumber>8)throw new Error('Choose a valid wallet and spot.');
+      const {network,asset}=paymentRail(form.get('chainId'),form.get('token'));
+      const current=await config(),slot:any=await db().prepare('SELECT * FROM slots WHERE id=?').bind(slotNumber).first();
+      if(!slot||slot.disabled||slot.order_id)throw new Error('This spot is unavailable.');
+      const amount=claimPriceUnits(initialPriceUnits(slotNumber),slot.current_price_units?BigInt(slot.current_price_units):null).toString();
+      const id=crypto.randomUUID(),expires=Math.min(Date.now()+300000,campaign.ends_at),digest=await reservationDigest(form);
+      const message=reservationMessage({origin:new URL(request.url).origin,id,wallet,slot:slotNumber,chain:network.id,token:asset.address,amount,treasury:current.treasury,expires,digest});
+      await db().prepare('INSERT INTO reservation_challenges(id,wallet,message,digest,amount_units,expires,used) VALUES(?,?,?,?,?,?,0)').bind(id,wallet,message,digest,amount,expires).run();
+      return json({id,message});
+    }
+
     if(request.method==='POST'&&endpoint==='reserve'){
       await initialize();
       const now=Date.now();
@@ -193,7 +219,12 @@ async function route(request:Request,context:any){
       const startingUnits=initialPriceUnits(slotNumber);
       const currentUnits=slot.current_price_units?BigInt(slot.current_price_units):null;
       const requiredUnits=claimPriceUnits(startingUnits,currentUnits);
-      const sponsorId=crypto.randomUUID(),sponsorshipId=crypto.randomUUID(),paymentId=crypto.randomUUID(),secret=crypto.randomUUID();
+      const challenge:any=await db().prepare('SELECT * FROM reservation_challenges WHERE id=? AND used=0 AND expires>?').bind(String(form.get('challengeId')||''),Date.now()).first();
+      if(!challenge||challenge.wallet!==values.wallet.toLowerCase()||challenge.digest!==await reservationDigest(form)||challenge.amount_units!==requiredUnits.toString())throw new Error('Reservation authorization expired or the spot price/details changed. Sign a new reservation.');
+      const expectedMessage=reservationMessage({origin:new URL(request.url).origin,id:challenge.id,wallet:values.wallet,slot:slotNumber,chain:network.id,token:asset.address,amount:requiredUnits.toString(),treasury:current.treasury,expires:challenge.expires,digest:challenge.digest});
+      if(challenge.message!==expectedMessage)throw new Error('Payment configuration changed. Sign a new reservation.');
+      await verifyReservationSignature(values.wallet,challenge.message,String(form.get('signature')||''));
+      const sponsorId=crypto.randomUUID(),sponsorshipId=challenge.id,paymentId=crypto.randomUUID(),secret=crypto.randomUUID();
       const createdAt=Date.now(),reservedUntil=Math.min(createdAt+current.reservationMinutes*60000,campaign.ends_at),logoKey=sponsorId;
       if(reservedUntil<=createdAt)return json({error:'The auction is closed.'},409);
       const startBlock=Number(await rpc(rail,'eth_blockNumber',[]));
@@ -201,6 +232,7 @@ async function route(request:Request,context:any){
       const priceDisplay=displayUnits(requiredUnits);
       await (env as any).BUCKET.put(logoKey,bytes,{httpMetadata:{contentType:mime}});
       await db().batch([
+        db().prepare('UPDATE reservation_challenges SET used=1 WHERE id=? AND used=0').bind(challenge.id),
         db().prepare('INSERT INTO sponsors(id,project_name,x_handle,website,contact_name,email,wallet_address,logo_url,logo_status,description,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(sponsorId,values.project,values.x,values.website||null,values.contact,values.email,values.wallet,logoKey,'PENDING_REVIEW',values.description,createdAt),
         db().prepare("INSERT INTO sponsorships(id,secret,slot_number,position,price_usd,claim_price_units,previous_holder_sponsorship_id,is_challenge,status,sponsor_id,reserved_until,terms_accepted,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'RESERVED',?,?,?,?,?)").bind(sponsorshipId,secret,slotNumber,positions[slotNumber-1],Number(requiredUnits/USDC_SCALE),requiredUnits.toString(),slot.holder_sponsorship_id||null,slot.holder_sponsorship_id?1:0,sponsorId,reservedUntil,1,createdAt,createdAt),
         db().prepare("INSERT INTO payments(id,sponsor_id,sponsorship_id,slot_id,wallet_address,token,token_contract,chain,chain_id,amount,amount_usd,amount_units,status,confirmations,verification_config,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING',0,?,?)").bind(paymentId,sponsorId,sponsorshipId,slotNumber,values.wallet,asset.symbol,asset.address,network.name,network.id,priceDisplay,Number(requiredUnits/USDC_SCALE),requiredUnits.toString(),JSON.stringify(snapshot),createdAt),
@@ -234,7 +266,7 @@ async function route(request:Request,context:any){
     return json({error:'Not found.'},404);
   }catch(error:any){
     console.error('Campaign request failed',error?.message);
-    return json({error:error?.message||'Request unavailable. Please try again.'},400);
+    return json({error:error?.message||'Request unavailable. Please try again.'},error?.status||400);
   }
 }
 

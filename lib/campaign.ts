@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { consumeBudget } from './abuse';
+import { authorizeAdministrator } from './admin-authorization';
+import { fencedDatabase } from './verification-scope';
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { PAYMENT_NETWORKS } from './payment-networks';
@@ -31,7 +34,7 @@ export const defaults={
 };
 export const positions=['Front · Upper Left','Front · Upper Right','Front · Lower Left','Front · Lower Right','Back · Upper Left','Back · Upper Right','Back · Lower Left','Back · Lower Right'];
 
-export function db(){if(!(env as any).DB)throw new Error('Sponsorship inventory is temporarily unavailable. Please try again.');return (env as any).DB;}
+export function db(){if(!(env as any).DB)throw new Error('Sponsorship inventory is temporarily unavailable. Please try again.');return fencedDatabase((env as any).DB);}
 
 export async function config(){
   const row:any=await db().prepare('SELECT value FROM settings WHERE id=1').first();
@@ -55,9 +58,7 @@ export function ready(c:any){return /^0x[0-9a-fA-F]{40}$/.test(c.treasury)&&!/^0
 
 export async function admin(){
   const user=await getChatGPTUser();
-  const email=(env as any).ADMIN_EMAIL;
-  if(!email||!user||user.email.toLowerCase()!==email.toLowerCase())throw new Error('Admin access requires the configured administrator account.');
-  return user;
+  return authorizeAdministrator(user,env as any);
 }
 
 export async function initialize(){
@@ -159,8 +160,8 @@ export async function settleCampaign(now=Date.now()){
         ? db().prepare("UPDATE sponsorships SET status='FINAL_HOLDER',updated_at=? WHERE id IN (SELECT holder_sponsorship_id FROM slots WHERE holder_sponsorship_id IS NOT NULL)").bind(now)
         : db().prepare("UPDATE sponsorships SET status='REFUND_PENDING',updated_at=? WHERE id IN (SELECT holder_sponsorship_id FROM slots WHERE holder_sponsorship_id IS NOT NULL)").bind(now),
     ];
-    if(!successful)statements.push(db().prepare(`UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units,refund_updated_at=?
-      WHERE status='CONFIRMED' AND refund_status='NONE' AND sponsorship_id IN (SELECT holder_sponsorship_id FROM slots WHERE holder_sponsorship_id IS NOT NULL)`).bind(now));
+    if(!successful)statements.push(db().prepare(`UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units,refund_updated_at=?,refund_eligible_at=COALESCE(refund_eligible_at,?)
+      WHERE status='CONFIRMED' AND refund_status='NONE' AND sponsorship_id IN (SELECT holder_sponsorship_id FROM slots WHERE holder_sponsorship_id IS NOT NULL)`).bind(now,now));
     await db().batch(statements);
     if(!successful)await queueCampaignRefundNotifications();
     current=await db().prepare('SELECT * FROM auction_campaign WHERE id=1').first();
@@ -258,6 +259,9 @@ export async function inventory(){
 }
 
 export async function rpc(c:any,method:string,params:any[]){
+  await consumeBudget(db(),'rpc:global',600);
+  const host=new URL(c.rpc).host;
+  await consumeBudget(db(),'rpc:'+host,300);
   const response=await fetch(c.rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:AbortSignal.timeout(12000)});
   if(!response.ok)throw new Error('Network verification unavailable. Try again.');
   const result:any=await response.json();

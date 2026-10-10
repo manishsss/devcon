@@ -1,5 +1,11 @@
 # Devcon sponsorship handoff
 
+## Current local development changes
+
+On branch `fix/payment-reliability`, the previously unapplied `security-staging-changes.patch` has been applied to repository source. Do not apply it again. The original baseline and deployment history below describe the prior state, not these development changes. No live deployment, production migrations, campaign activation or funds were performed.
+
+Added an optional disabled GitHub payment-monitor workflow, an authenticated monitor client, client failure tests and a monitor fairness regression. Read `docs/payment-operations.md` for setup and private-Sites service-access limitations. Run `node scripts/test-security.mjs` with Node 24; missing suites and zero-test runs now fail. Hosted gates in `docs/remaining-security-audit.md` still require validation before launch.
+
 ## Source baseline
 
 This tree matches the live main website version 50, commit 3bd8ea2752ef5d39a1e58b23f5e8d295ad7ae52a. Generated TypeScript cache is omitted. The original hosted website must not be changed or deployed without explicit authorization.

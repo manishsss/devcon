@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 export const slots=sqliteTable('slots',{
   id:integer('id').primaryKey(),
@@ -60,13 +61,21 @@ export const payments=sqliteTable('payments',{
   verificationConfig:text('verification_config').notNull(),
   createdAt:integer('created_at').notNull(),
   confirmedAt:integer('confirmed_at'),
+  verificationLock:text('verification_lock'),
+  verificationLockUntil:integer('verification_lock_until'),
+  reconciliationStatus:text('reconciliation_status'),
+  verificationError:text('verification_error'),
+  verificationCheckedAt:integer('verification_checked_at'),
+  verificationNextAt:integer('verification_next_at'),
+  verificationAttempts:integer('verification_attempts').notNull().default(0),
+  refundEligibleAt:integer('refund_eligible_at'),
   refundNote:text('refund_note'),
   refundStatus:text('refund_status').notNull().default('NONE'),
   refundAmountUnits:text('refund_amount_units'),
   refundTransactionHash:text('refund_transaction_hash'),
   refundUpdatedAt:integer('refund_updated_at'),
   refundError:text('refund_error'),
-},t=>[index('idx_payments_sponsorship').on(t.sponsorshipId),index('idx_payments_refund_status').on(t.refundStatus),uniqueIndex('payments_transaction_hash_unique').on(t.transactionHash),uniqueIndex('payments_refund_transaction_hash_unique').on(t.refundTransactionHash)]);
+},t=>[uniqueIndex('payments_sponsorship_unique').on(t.sponsorshipId),index('idx_payments_sponsorship').on(t.sponsorshipId),index('idx_payments_refund_status').on(t.refundStatus),uniqueIndex('payments_unresolved_intent_unique').on(sql`lower(${t.walletAddress})`,t.chainId,sql`lower(${t.tokenContract})`,t.amountUnits).where(sql`${t.status} NOT IN ('CONFIRMED','LATE_CONFIRMED','FAILED')`),uniqueIndex('payments_transaction_hash_unique').on(t.transactionHash),uniqueIndex('payments_refund_transaction_hash_unique').on(t.refundTransactionHash)]);
 
 export const auctionCampaign=sqliteTable('auction_campaign',{
   id:integer('id').primaryKey(),
@@ -96,3 +105,9 @@ export const notifications=sqliteTable('notifications',{
   createdAt:integer('created_at').notNull(),
   sentAt:integer('sent_at'),
 },t=>[index('idx_notifications_status').on(t.status),uniqueIndex('notifications_type_sponsorship_unique').on(t.type,t.sponsorshipId)]);
+
+export const reservationChallenges=sqliteTable('reservation_challenges',{id:text('id').primaryKey(),wallet:text('wallet').notNull(),message:text('message').notNull(),digest:text('digest').notNull(),amountUnits:text('amount_units').notNull(),expires:integer('expires').notNull(),used:integer('used').notNull().default(0)});
+
+export const requestBudgets=sqliteTable('request_budgets',{key:text('key').primaryKey(),window:integer('window').notNull(),count:integer('count').notNull()});
+
+export const verificationGuards=sqliteTable('verification_guards',{paymentId:text('payment_id').primaryKey(),token:text('token').notNull()});

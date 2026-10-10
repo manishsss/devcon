@@ -188,7 +188,7 @@ export default function Dashboard() {
                       <button className="button" disabled={busy} onClick={() => save('review', { sponsorId: holder.sponsorId, action: 'REPLACEMENT_REQUESTED' }, 'Replacement requested.')}>REQUEST REPLACEMENT</button>
                       <button className="button" disabled={busy} onClick={() => save('review', { sponsorId: holder.sponsorId, action: 'REJECTED' }, 'Logo rejected.')}>REJECT</button>
                     </div>
-                    <form className="replacement-form" onSubmit={event => replaceLogo(event, holder.sponsorId)}><label>REPLACE LOGO<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /></label><button className="button" disabled={busy}>UPLOAD</button></form>
+                    <form className="replacement-form" onSubmit={event => replaceLogo(event, holder.sponsorId)}><label>REPLACE LOGO<input name="logo" type="file" accept="image/png,image/jpeg" required /></label><button className="button" disabled={busy}>UPLOAD</button></form>
                   </div>
                 </div>}
               </section>;

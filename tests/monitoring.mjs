@@ -1,0 +1,18 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';import ts from 'typescript';import {readFileSync} from 'node:fs';
+const m={exports:{}};new Function('module','exports',ts.transpileModule(readFileSync('lib/payment-monitor.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(m,m.exports);const {runPaymentMonitor:monitor,maintenanceAuthorized:auth}=m.exports;
+const s=new DatabaseSync(':memory:');s.exec("CREATE TABLE sponsorships(id TEXT,secret TEXT,created_at INTEGER);CREATE TABLE payments(id TEXT,sponsorship_id TEXT,status TEXT,transaction_hash TEXT,verification_error TEXT,verification_checked_at INTEGER,verification_next_at INTEGER,verification_attempts INTEGER);INSERT INTO sponsorships VALUES('sp','private',1);INSERT INTO payments(id,sponsorship_id,status,verification_attempts) VALUES('p','sp','EXPIRED',0)");const db={prepare:q=>({bind:(...a)=>({all:async()=>({results:s.prepare(q).all(...a)}),run:async()=>s.prepare(q).run(...a)})})};
+await test('expired payments are monitored and failures persist with backoff and recover',async()=>{const r=await monitor(db,async()=>{throw Error('RPC failed private secret not for logs');},1000);assert.equal(r.failed,1);assert.equal(s.prepare('SELECT verification_error FROM payments').get().verification_error,'VERIFICATION_UNAVAILABLE');assert.equal((await monitor(db,async()=>{},2000)).processed,0);assert.equal((await monitor(db,async()=>{},1000000)).succeeded,1);assert.equal(s.prepare('SELECT verification_error FROM payments').get().verification_error,null);});
+await test('maintenance endpoint authorization fails closed',()=>{assert.equal(auth(new Request('https://site.test'),undefined),false);assert.equal(auth(new Request('https://site.test',{headers:{authorization:'Bearer wrong'}}),'x'.repeat(32)),false);assert.equal(auth(new Request('https://site.test',{headers:{authorization:'Bearer '+'x'.repeat(32)}}),'x'.repeat(32)),true);});
+await test('older failing payments cannot starve later payments',async()=>{
+  s.exec('DELETE FROM payments; DELETE FROM sponsorships');
+  for(let i=0;i<9;i++){
+    s.prepare('INSERT INTO sponsorships VALUES(?,?,?)').run('sp'+i,'secret'+i,i);
+    s.prepare("INSERT INTO payments(id,sponsorship_id,status,verification_attempts) VALUES(?,?,'EXPIRED',0)").run('p'+i,'sp'+i);
+  }
+  const visited=[];
+  const first=await monitor(db,async body=>{visited.push(body.id);throw Error('RPC unavailable');},1000);
+  assert.equal(first.processed,8);
+  const second=await monitor(db,async body=>visited.push(body.id),2000);
+  assert.equal(second.processed,1);
+  assert.equal(visited[8],'sp8');
+});
