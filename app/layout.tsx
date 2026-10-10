@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import "./mobile.css";
-import { ThemeSwitch } from "@/components/theme-switch";
 
 export const metadata: Metadata = {
   title: "8 Projects. 1 Devcon T-Shirt.",
@@ -27,7 +26,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-palette="burgundy" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{__html: `(function(){try{var p=localStorage.getItem('devcon-accent');if(p==='orange'||p==='burgundy')document.documentElement.dataset.palette=p;}catch(e){}})();`}} /></head>
-      <body className="antialiased">{children}<ThemeSwitch /></body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

@@ -168,6 +168,7 @@ export default function Home() {
       </nav>
 
       <section className="hero wrap centered-portrait-hero">
+        <div className="model-headline"><h1>My body is your billboard</h1><p>8 exclusive brand spots at Devcon Mumbai</p></div>
         <div className="shirt-stage" data-preview-side={previewSide}>
           <span className="shirt-limited mono">LIMITED / 08</span>
           <div className="mobile-preview-controls">
@@ -185,7 +186,7 @@ export default function Home() {
               {data.slots.filter(slot => side === 'front' ? slot.id <= 4 : slot.id > 4).map(slot => (
                 <button key={slot.id} className={`print-slot ${slot.status === 'HELD' ? 'held' : ''}`} disabled={!canOpenSlot(slot)} onClick={() => claim(slot)} aria-label={`Slot ${slot.id}, ${slot.position}, claim price $${slot.claimPrice}, ${slot.status}`}>
                   {slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <><span className="slot-plus">{slot.status==='HELD'?'×1.5':'+'}</span><span>SLOT {String(slot.id).padStart(2, '0')}</span><b>${slot.claimPrice}</b></>}
-                  <small>{slot.status==='HELD'?'NEXT CLAIM':slot.status==='AVAILABLE'?'CLAIM PRICE':slot.status}</small>
+                  {slot.status !== 'AVAILABLE' && <small>{slot.status==='HELD'?'NEXT CLAIM':slot.status}</small>}
                 </button>
               ))}
             </div>
@@ -202,10 +203,9 @@ export default function Home() {
       </section>
 
       <section className="section wrap" id="spots">
-        <div className="section-heading"><div><span className="eyebrow">EIGHT POSITIONS. FOUR DAYS.</span><h2>Choose your spot.</h2></div></div>
+        <div className="section-heading"><div><h2>Choose your spot.</h2></div></div>
         <div className="auction-explainer">
           <article><span className="mono">4-DAY SPOT AUCTION</span><h3>Every spot starts at its listed price.</h3><p>Already claimed a spot? You can take it by paying 1.5 times the current price. When the timer hits zero, the current holder of each spot wins it.</p></article>
-          <article className="threshold-rule"><span className="mono">THE 50% RULE</span><h3>The campaign needs to reach $1,100.</h3><p>If less than 50% of the $2,200 target is raised by the end of the auction, all confirmed current sponsorship payments are refunded in full and the fundraiser closes. At $1,100 or more, the trip goes ahead.</p></article>
         </div>
         {error && <p className="notice" role="alert">{error} <button onClick={refresh}>Try again</button></p>}
         {status==='REFUNDED' && <p className="notice">The minimum funding target wasn&apos;t reached. All confirmed sponsorship payments are being refunded.</p>}

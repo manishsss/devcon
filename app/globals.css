@@ -287,3 +287,31 @@ footer a:hover,footer a:focus-visible{text-decoration:underline;text-decoration-
 .about-posts-heading{margin:48px 0 28px;padding-bottom:28px;border-bottom:1px solid #ddd6c9;font-size:18px;font-weight:400;line-height:1.6;color:#625d56}.about-posts{margin-top:0}.post-category{font-size:11px;letter-spacing:.04em;color:var(--brand-accent)}.about-post h3{font-size:25px;font-weight:650;margin-top:18px}.about-post p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;margin-top:18px;color:#625d56;min-height:3.3em}@media(max-width:600px){.about-posts-heading{font-size:16px;margin-top:36px;padding-bottom:22px}.about-post h3{font-size:23px}}
 
 .post-preview{width:100%}.post-preview.with-proof{display:grid;grid-template-columns:minmax(0,1fr) 45%;gap:18px;align-items:center;margin:18px 0 24px}.post-preview.with-proof p{margin:0}.post-proof{display:block;width:100%;height:auto;border:1px solid #ddd6c9;border-radius:4px}@media(max-width:600px){.post-preview.with-proof{gap:12px}}
+
+/* Keep the refund heading aligned after removing its eyebrow label. */
+.auction-explainer .threshold-rule h3{margin-top:0}
+
+.centered-portrait-hero{flex-direction:column;align-items:center;gap:4px}
+.model-headline{text-align:center;width:100%;margin-bottom:0}
+.model-headline h1{font-family:"Geist Custom",Arial,sans-serif;font-size:clamp(34px,5.2vw,68px);font-weight:600;line-height:1.1;margin:0 0 12px;letter-spacing:-.045em;text-transform:none;color:#17151d}
+.model-headline p{margin:0;font-size:clamp(15px,1.6vw,18px);font-weight:500;color:#17151d}
+
+.centered-portrait-hero .shirt-stage{padding-top:4px}
+
+/* A slightly tighter rhythm between homepage sections. */
+.centered-portrait-hero{padding-bottom:34px}
+.fund{padding-top:24px;padding-bottom:23px}
+.section{padding-top:78px}
+.faq-section{padding-top:92px}
+.onboard{padding-top:42px}
+footer{padding-top:43px;padding-bottom:37px}
+@media(max-width:600px){.section{padding-top:49px}.faq-section{padding-top:64px}.onboard{padding-top:38px}footer{padding-top:28px;padding-bottom:27px}}
+
+.auction-explainer{grid-template-columns:minmax(0,1fr)}
+.auction-explainer article{padding:24px 0}
+.auction-explainer p{max-width:900px}
+@media(max-width:600px){.auction-explainer article{padding:20px 0}}
+
+/* Bring the spot selection closer to the funding progress. */
+#spots{padding-top:38px}
+@media(max-width:600px){#spots{padding-top:28px}}
