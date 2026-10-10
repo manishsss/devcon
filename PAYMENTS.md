@@ -60,8 +60,9 @@ administrator account. PNG, JPEG and restricted static SVG logos are accepted.
 
 The linked Sites project was not accessible from the implementation account.
 No production deployment, production migration, auction launch or real payment
-was performed here. Deploy from Manish's account against the existing project;
-preserve its project ID, database, bucket, audience and prior migration history.
+was performed here. The project's owning account has not been identified here.
+Deploy through an account with access to the existing project; preserve its
+project ID, database, bucket, audience and prior migration history.
 
 1. Review and merge the change, then install from the updated pnpm lockfile.
 2. Apply the new D1 migration `drizzle/0007_colossal_lady_bullseye.sql` exactly
