@@ -2,6 +2,7 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { PAYMENT_NETWORKS } from './payment-networks';
+import { TREASURY_WALLET_ADDRESS } from './payment-networks';
 import {
   AUCTION_DURATION_MS,
   INITIAL_PRICES,
@@ -17,7 +18,7 @@ import {
 const BASE_USDC='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 export const defaults={
   target:2200,
-  treasury:'',
+  treasury:TREASURY_WALLET_ADDRESS,
   chainName:'Base',
   chainId:8453,
   rpc:'https://mainnet.base.org',
@@ -51,7 +52,7 @@ export async function config(){
   };
 }
 
-export function ready(c:any){return /^0x[0-9a-fA-F]{40}$/.test(c.treasury)&&!/^0x0{40}$/i.test(c.treasury);}
+export function ready(c:any){return typeof c.treasury==='string'&&c.treasury.toLowerCase()===TREASURY_WALLET_ADDRESS;}
 
 export async function admin(){
   const user=await getChatGPTUser();
@@ -216,7 +217,7 @@ export async function inventory(){
       history:histories.get(row.id)||[],
       holder:held?{project:row.project_name,x:row.x_handle}:null,
       project:held?row.project_name:null,
-      logo:held&&row.logo_status==='APPROVED'&&row.logo_url?'/api/logo/'+row.logo_url:null,
+      logo:held&&row.holder_payment_status==='CONFIRMED'&&row.logo_status==='APPROVED'&&row.logo_url?'/api/logo/'+row.logo_url:null,
       x:held?row.x_handle:null,
       checkoutInProgress,
       canClaim:state==='LIVE'&&paymentReady&&!row.disabled&&!checkoutInProgress,
@@ -267,7 +268,7 @@ export async function rpc(c:any,method:string,params:any[]){
 
 export function validateConfig(c:any){
   if(!Number.isInteger(c.target)||c.target!==2200)throw new Error('Campaign target must remain $2,200.');
-  if(!ready(c))throw new Error('Complete the EVM treasury wallet configuration.');
+  if(!ready(c))throw new Error('The treasury must be Manish’s configured receiving wallet: '+TREASURY_WALLET_ADDRESS);
   if(!Number.isInteger(c.confirmations)||c.confirmations<1||c.confirmations>100)throw new Error('Confirmations must be between 1 and 100.');
   if(!Number.isInteger(c.reservationMinutes)||c.reservationMinutes<5||c.reservationMinutes>60)throw new Error('Reservation duration must be between 5 and 60 minutes.');
   if(!Number.isInteger(c.maxUploadMB)||c.maxUploadMB<1||c.maxUploadMB>10)throw new Error('Logo limit must be between 1 and 10 MB.');

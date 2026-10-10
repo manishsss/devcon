@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { db, dispatchNotification, queueNotification, rpc, sendSponsorEmail, settleCampaign } from './campaign';
+import { config, db, dispatchNotification, queueNotification, ready, rpc, sendSponsorEmail, settleCampaign } from './campaign';
 import { formatUsdcUnits } from './auction';
+import { paymentRail, TREASURY_WALLET_ADDRESS } from './payment-networks';
 
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const addressFromTopic = (topic: string) => `0x${topic.slice(-40)}`;
@@ -40,12 +41,12 @@ const resultFor = (row: any, overrides: any = {}) => ({
 async function releaseFailedPayment(row: any, hash: string, message: string) {
   const failedAt = Date.now();
   await db().batch([
-    db().prepare("UPDATE payments SET transaction_hash=?,status='FAILED' WHERE id=? AND status!='CONFIRMED'").bind(hash, row.payment_id),
-    db().prepare("UPDATE sponsorships SET status='PAYMENT_FAILED',updated_at=? WHERE id=? AND status IN ('RESERVED','PAYMENT_PENDING','EXPIRED')").bind(failedAt, row.id),
-    db().prepare('UPDATE slots SET order_id=NULL,expires=NULL WHERE id=? AND order_id=?').bind(row.slot_number, row.id),
+    db().prepare("UPDATE payments SET status='FAILED' WHERE id=? AND transaction_hash=? AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING')").bind(row.payment_id,hash),
+    db().prepare("UPDATE sponsorships SET status='PAYMENT_FAILED',updated_at=? WHERE id=? AND status IN ('RESERVED','PAYMENT_PENDING','EXPIRED') AND EXISTS(SELECT 1 FROM payments WHERE id=? AND status='FAILED')").bind(failedAt, row.id,row.payment_id),
+    db().prepare("UPDATE slots SET order_id=NULL,expires=NULL WHERE id=? AND order_id=? AND EXISTS(SELECT 1 FROM payments WHERE id=? AND status='FAILED')").bind(row.slot_number, row.id,row.payment_id),
   ]);
   const final:any=await checkoutRecord(row.id,row.secret);
-  return resultFor(final||row, { status: 'FAILED', message });
+  return resultFor(final||row, { message });
 }
 
 async function markLatePayment(row:any,hash:string,confirmations:number,message:string){
@@ -53,10 +54,12 @@ async function markLatePayment(row:any,hash:string,confirmations:number,message:
   await db().batch([
     db().prepare(`UPDATE payments SET transaction_hash=?,status='LATE_CONFIRMED',confirmations=?,confirmed_at=?,
       refund_status='REFUND_PENDING',refund_amount_units=amount_units,refund_updated_at=?
-      WHERE id=? AND status!='CONFIRMED'`).bind(hash,confirmations,confirmedAt,confirmedAt,row.payment_id),
-    db().prepare("UPDATE sponsorships SET status='REFUND_PENDING',updated_at=? WHERE id=? AND status!='CURRENT_HOLDER' AND status!='FINAL_HOLDER'").bind(confirmedAt,row.id),
-    db().prepare('UPDATE slots SET order_id=NULL,expires=NULL WHERE id=? AND order_id=?').bind(row.slot_number,row.id),
+      WHERE id=? AND transaction_hash=? AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING')`).bind(hash,confirmations,confirmedAt,confirmedAt,row.payment_id,hash),
+    db().prepare("UPDATE sponsorships SET status='REFUND_PENDING',updated_at=? WHERE id=? AND status IN ('RESERVED','EXPIRED','PAYMENT_PENDING') AND EXISTS(SELECT 1 FROM payments WHERE id=? AND status='LATE_CONFIRMED')").bind(confirmedAt,row.id,row.payment_id),
+    db().prepare("UPDATE slots SET order_id=NULL,expires=NULL WHERE id=? AND order_id=? AND EXISTS(SELECT 1 FROM payments WHERE id=? AND status='LATE_CONFIRMED')").bind(row.slot_number,row.id,row.payment_id),
   ]);
+  const final:any=await checkoutRecord(row.id,row.secret);
+  if(final?.payment_status!=='LATE_CONFIRMED')return resultFor(final||row);
   const notificationId=`late-payment:${row.id}`;
   await queueNotification({
     id:notificationId,
@@ -69,8 +72,7 @@ async function markLatePayment(row:any,hash:string,confirmations:number,message:
     body:`Your $${displayUnits(row.claim_price_units)} ${row.token} on ${row.chain} payment for Slot ${String(row.slot_number).padStart(2,'0')} was confirmed after the claim window had closed. It did not replace the current holder and is marked REFUND_PENDING. The refund is not complete until an on-chain refund reference is recorded.`,
   });
   await dispatchNotification(notificationId);
-  const final:any=await checkoutRecord(row.id,row.secret);
-  return resultFor(final||row,{status:'LATE_CONFIRMED',refundStatus:'REFUND_PENDING',message});
+  return resultFor(final,{message});
 }
 
 async function confirmClaim(row:any,hash:string,confirmations:number){
@@ -83,13 +85,14 @@ async function confirmClaim(row:any,hash:string,confirmations:number){
   const statements:any[]=[
     db().prepare(`UPDATE slots SET holder_sponsorship_id=?,current_price_units=?,claim_count=claim_count+1,order_id=NULL,expires=NULL
       WHERE id=? AND order_id=? AND holder_sponsorship_id IS ? AND current_price_units IS ?
+      AND EXISTS(SELECT 1 FROM payments WHERE id=? AND transaction_hash=? AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING'))
       AND EXISTS(SELECT 1 FROM auction_campaign WHERE id=1 AND status='LIVE' AND ends_at>?)`)
-      .bind(row.id,row.claim_price_units,row.slot_number,row.id,expectedPrevious,expectedCurrent,confirmedAt),
+      .bind(row.id,row.claim_price_units,row.slot_number,row.id,expectedPrevious,expectedCurrent,row.payment_id,hash,confirmedAt),
     db().prepare(`UPDATE payments SET transaction_hash=?,status='CONFIRMED',confirmations=?,confirmed_at=?
-      WHERE id=? AND status!='CONFIRMED' AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`)
+      WHERE id=? AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING') AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`)
       .bind(hash,confirmations,confirmedAt,row.payment_id,row.id),
     db().prepare(`UPDATE sponsorships SET status='CURRENT_HOLDER',claim_sequence=(SELECT claim_count FROM slots WHERE id=?),updated_at=?
-      WHERE id=? AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`)
+      WHERE id=? AND status IN ('RESERVED','EXPIRED','PAYMENT_PENDING') AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`)
       .bind(row.slot_number,confirmedAt,row.id,row.id),
     db().prepare(`UPDATE sponsors SET logo_status='APPROVED' WHERE id=? AND logo_status='PENDING_REVIEW'
       AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`).bind(row.sponsor_id,row.id),
@@ -98,7 +101,7 @@ async function confirmClaim(row:any,hash:string,confirmations:number){
     const notificationId=`outbid:${previous.id}`;
     const body=`You've been outbid on your Devcon spot.\n\nYour Slot ${String(row.slot_number).padStart(2,'0')} position was claimed by another project for $${displayUnits(row.claim_price_units)} ${row.token} on ${row.chain}.\n\nAmount paid: $${displayUnits(previous.claim_price_units)} ${previous.token} on ${previous.chain}\nNew claim amount: $${displayUnits(row.claim_price_units)} ${row.token} on ${row.chain}\nRefund amount: $${displayUnits(previous.claim_price_units)} ${previous.token} on ${previous.chain}\nRefund status: REFUND_PENDING\n\nYour original payment is eligible for a full refund. The refund is not complete until its on-chain transaction is recorded.`;
     statements.push(
-      db().prepare("UPDATE sponsorships SET status='OUTBID',updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)").bind(confirmedAt,previous.id,row.id),
+      db().prepare("UPDATE sponsorships SET status='OUTBID',updated_at=? WHERE id=? AND status='CURRENT_HOLDER' AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)").bind(confirmedAt,previous.id,row.id),
       db().prepare(`UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units,refund_updated_at=?
         WHERE sponsorship_id=? AND status='CONFIRMED' AND refund_status='NONE' AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)`).bind(confirmedAt,previous.id,row.id),
       db().prepare(`INSERT OR IGNORE INTO notifications
@@ -107,12 +110,12 @@ async function confirmClaim(row:any,hash:string,confirmations:number){
         .bind(notificationId,previous.sponsor_id,previous.id,previous.payment_id,'OUTBID',previous.email,"You've been outbid on your Devcon spot.",body,confirmedAt,row.id),
     );
   }
-  await db().batch(statements);
+  const changes=await db().batch(statements);
   const final:any=await checkoutRecord(row.id,row.secret);
-  const won:any=await db().prepare('SELECT holder_sponsorship_id FROM slots WHERE id=?').bind(row.slot_number).first();
-  if(won?.holder_sponsorship_id!==row.id||final?.payment_status!=='CONFIRMED'){
+  if(final?.payment_status!=='CONFIRMED'){
     return markLatePayment(row,hash,confirmations,'The payment was confirmed, but the claim window had already closed. A full refund is pending.');
   }
+  if(!changes[0].meta.changes)return resultFor(final);
   if(previous)await dispatchNotification(`outbid:${previous.id}`);
   await sendSponsorEmail(final.email,'Devcon spot claim confirmed',`Your $${displayUnits(final.claim_price_units)} ${final.token} payment on ${final.chain} is confirmed. You are the current holder of Slot ${String(final.slot_number).padStart(2,'0')}. The spot can still be taken for 1.5 times its current price until the four-day auction closes.`);
   return resultFor(final,{message:'Payment confirmed. You are the current holder of this spot.'});
@@ -124,17 +127,17 @@ export async function verifyPayment(body: any) {
   let hash = String(body.tx || '').trim().toLowerCase();
   const row: any = await checkoutRecord(id, secret);
   if (!row) throw new Error('Reservation unavailable.');
-  if (['CONFIRMED','LATE_CONFIRMED'].includes(row.payment_status)) return resultFor(row);
+  if (['CONFIRMED','LATE_CONFIRMED','FAILED'].includes(row.payment_status)) return resultFor(row);
+  // Rotate background scans fairly even when an unpaid checkout has no hash.
+  await db().prepare('UPDATE sponsorships SET updated_at=? WHERE id=?').bind(Date.now(),row.id).run();
   hash = hash || row.transaction_hash || await discoverPayment(row);
   if (!hash) return resultFor(row,{status:'PENDING',message:'Watching for your exact USDC transfer on '+row.chain+'.'});
   if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error('Enter a valid transaction hash.');
   if (row.transaction_hash && row.transaction_hash.toLowerCase() !== hash.toLowerCase()) throw new Error('This reservation already has a payment under verification.');
 
-  const campaign:any=await settleCampaign(Date.now());
-  const slot:any = await db().prepare('SELECT order_id FROM slots WHERE id=?').bind(row.slot_number).first();
-  // Expired claims may still have received funds; verify them for refund eligibility.
-
   const verification = JSON.parse(row.verification_config);
+  const {asset}=paymentRail(row.chain_id,row.token);
+  if(row.token_contract.toLowerCase()!==asset.address.toLowerCase()||verification.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS)throw new Error('This checkout has an unsupported USDC contract or recipient.');
   if (Number(await rpc(verification, 'eth_chainId', [])) !== row.chain_id) throw new Error('Configured RPC returned a different chain.');
   const [transaction, receipt] = await Promise.all([
     rpc(verification, 'eth_getTransactionByHash', [hash]),
@@ -150,19 +153,33 @@ export async function verifyPayment(body: any) {
   if (String(transaction.from || '').toLowerCase() !== row.wallet_address.toLowerCase()) throw new Error('The transaction sender does not match the registered payment wallet.');
   if (String(transaction.to || '').toLowerCase() !== row.token_contract.toLowerCase()) throw new Error('The transaction did not call the selected token contract.');
   if (String(transaction.input || transaction.data || '').toLowerCase() !== expectedInput) throw new Error('The transaction does not encode the exact token amount and treasury destination.');
+  if (String(transaction.hash).toLowerCase() !== hash || BigInt(transaction.value || '0x0') !== BigInt(0)) throw new Error('The transaction identity or native value is invalid.');
+
+  // Claim a hash atomically before any status mutation. The unique database index
+  // prevents a transfer from being credited to multiple checkouts.
+  try {
+    await db().prepare(`UPDATE payments SET transaction_hash=? WHERE id=? AND (transaction_hash IS NULL OR transaction_hash=?)
+      AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING')`).bind(hash,row.payment_id,hash).run();
+  } catch { throw new Error('This transaction is already assigned to another checkout.'); }
+  const bound:any=await checkoutRecord(id,secret);
+  if(['CONFIRMED','LATE_CONFIRMED','FAILED'].includes(bound.payment_status))return resultFor(bound);
+  if(bound.transaction_hash!==hash)throw new Error('This checkout already has a different transaction under verification.');
 
   if (!receipt) {
     await db().batch([
-      db().prepare("UPDATE payments SET transaction_hash=?,status='PAYMENT_DETECTED' WHERE id=? AND transaction_hash IS NULL").bind(hash, row.payment_id),
+      db().prepare("UPDATE payments SET status='PAYMENT_DETECTED' WHERE id=? AND transaction_hash=? AND status IN ('PENDING','EXPIRED')").bind(row.payment_id,hash),
       db().prepare("UPDATE sponsorships SET status='PAYMENT_PENDING',updated_at=? WHERE id=? AND status='RESERVED'").bind(Date.now(), row.id),
     ]);
     const detected:any=await checkoutRecord(id,secret);
-    return resultFor(detected||row, { status:'PAYMENT_DETECTED',message: 'Payment detected. Waiting for the transaction to be mined.' });
+    return resultFor(detected||row, { message: 'Payment detected. Waiting for the transaction to be mined.' });
   }
 
-  if (receipt.status !== '0x1') return releaseFailedPayment(row, hash, 'The blockchain transaction failed. The current holder was not changed.');
+  if(String(receipt.transactionHash).toLowerCase()!==hash||transaction.blockHash!==receipt.blockHash||transaction.blockNumber!==receipt.blockNumber)throw new Error('Transaction and receipt do not refer to the same mined payment.');
+
+  if(!['0x0','0x1'].includes(receipt.status))throw new Error('The transaction receipt has an invalid execution status.');
 
   const matchingLogs = (receipt.logs || []).filter((log: any) =>
+    !log.removed && log.blockHash===receipt.blockHash && String(log.transactionHash).toLowerCase()===hash &&
     String(log.address).toLowerCase() === row.token_contract.toLowerCase() &&
     log.topics?.length === 3 &&
     String(log.topics[0]).toLowerCase() === TRANSFER_TOPIC &&
@@ -170,26 +187,29 @@ export async function verifyPayment(body: any) {
     addressFromTopic(log.topics[2]).toLowerCase() === verification.treasury.toLowerCase() &&
     BigInt(log.data) === expectedUnits
   );
-  if (matchingLogs.length !== 1) throw new Error('No exact token transfer matched the wallet, amount and treasury address.');
+  if (receipt.status==='0x1'&&matchingLogs.length !== 1) throw new Error('No exact token transfer matched the wallet, amount and treasury address.');
 
   const block: any = await rpc(verification, 'eth_getBlockByNumber', [receipt.blockNumber, false]);
-  if (!block?.timestamp) throw new Error('The payment block is temporarily unavailable. Try again.');
+  if (!block?.timestamp || block.hash!==receipt.blockHash || block.number!==receipt.blockNumber) throw new Error('The payment is not in the canonical block. Try again.');
   const timestamp = Number(block.timestamp) * 1000;
+  if(Number(receipt.blockNumber)<=Number(verification.startBlock)||timestamp<Math.floor(row.created_at/1000)*1000)throw new Error('This transfer predates the checkout and cannot create a claim or refund.');
   const currentBlock = Number(await rpc(verification, 'eth_blockNumber', []));
   const confirmations = Math.max(0, currentBlock - Number(receipt.blockNumber) + 1);
   if (confirmations < verification.confirmations) {
     await db().batch([
-      db().prepare("UPDATE payments SET transaction_hash=?,status='CONFIRMING',confirmations=? WHERE id=?").bind(hash, confirmations, row.payment_id),
+      db().prepare("UPDATE payments SET status='CONFIRMING',confirmations=MAX(confirmations,?) WHERE id=? AND transaction_hash=? AND status IN ('PENDING','EXPIRED','PAYMENT_DETECTED','CONFIRMING')").bind(confirmations,row.payment_id,hash),
       db().prepare("UPDATE sponsorships SET status='PAYMENT_PENDING',updated_at=? WHERE id=? AND status IN ('RESERVED','EXPIRED')").bind(Date.now(), row.id),
     ]);
     const confirming:any=await checkoutRecord(id,secret);
-    return resultFor(confirming||row, { status:'CONFIRMING',confirmations, required: verification.confirmations });
+    return resultFor(confirming||row, { required: verification.confirmations });
   }
+
+  if(receipt.status==='0x0')return releaseFailedPayment(row,hash,'The blockchain transaction failed. The current holder was not changed.');
 
   const now=Date.now();
   const refreshedCampaign:any=await settleCampaign(now);
   const refreshedSlot:any=await db().prepare('SELECT order_id FROM slots WHERE id=?').bind(row.slot_number).first();
-  const withinWindow=timestamp>=row.created_at&&timestamp<=row.reserved_until&&refreshedCampaign?.status==='LIVE'&&now<refreshedCampaign.ends_at&&refreshedSlot?.order_id===row.id;
+  const withinWindow=timestamp<=row.reserved_until&&now<row.reserved_until&&refreshedCampaign?.status==='LIVE'&&now<refreshedCampaign.ends_at&&refreshedSlot?.order_id===row.id;
   if(!withinWindow){
     return markLatePayment(row,hash,confirmations,'The exact payment was confirmed outside the active claim window. It did not replace the current holder, and a full refund is pending.');
   }
@@ -202,7 +222,7 @@ export async function discoverPayment(row:any){
   const verification=JSON.parse(row.verification_config);
   if(Number(await rpc(verification,'eth_chainId',[]))!==row.chain_id)throw new Error('Configured RPC returned a different chain.');
   const head=Number(await rpc(verification,'eth_blockNumber',[]));
-  const from=Math.max(0,Number(verification.scanBlock??verification.startBlock??Math.max(0,head-2000)));
+  const from=Math.max(0,Number(verification.startBlock??0)+1,Number(verification.scanBlock??verification.startBlock??Math.max(0,head-2000)));
   const topic=(address:string)=>'0x'+address.slice(2).toLowerCase().padStart(64,'0');
   // Bounded batches keep public RPC queries small; persisted progress resumes next run.
   let cursor=from;
@@ -232,7 +252,7 @@ export async function monitorPayments() {
   const { results } = await db().prepare(`SELECT sp.id,sp.secret,p.transaction_hash AS tx FROM sponsorships sp
     JOIN payments p ON p.sponsorship_id=sp.id WHERE
     (p.status IN ('PAYMENT_DETECTED','CONFIRMING') OR (p.status IN ('PENDING','EXPIRED') AND sp.reserved_until>?))
-    ORDER BY sp.created_at LIMIT 8`).bind(Date.now()-3600000).all();
+    ORDER BY sp.updated_at,sp.created_at LIMIT 8`).bind(Date.now()-3600000).all();
   await Promise.all(results.map(async (row: any) => { try { await verifyPayment({ id: row.id, secret: row.secret, tx: row.tx }); } catch {} }));
 }
 
@@ -241,8 +261,13 @@ export async function verifyRefund(payment:any,hash:string){
   if(Number(await rpc(verification,'eth_chainId',[]))!==payment.chain_id)throw new Error('Refund RPC returned a different chain.');
   const receipt=await rpc(verification,'eth_getTransactionReceipt',[hash]);
   if(!receipt||receipt.status!=='0x1')throw new Error('The refund transaction is not confirmed successfully on the original payment network.');
+  if(String(receipt.transactionHash).toLowerCase()!==hash)throw new Error('Refund receipt does not match the submitted transaction.');
+  const block=await rpc(verification,'eth_getBlockByNumber',[receipt.blockNumber,false]);
+  if(!block||block.hash!==receipt.blockHash||block.number!==receipt.blockNumber)throw new Error('The refund is not in the canonical block.');
+  if(Number(block.timestamp)*1000<Math.floor(payment.confirmed_at/1000)*1000)throw new Error('The refund transaction predates the original payment.');
   const expectedUnits=BigInt(payment.refund_amount_units||payment.amount_units);
   const logs=(receipt.logs||[]).filter((log:any)=>
+    !log.removed&&log.blockHash===receipt.blockHash&&String(log.transactionHash).toLowerCase()===hash&&
     String(log.address).toLowerCase()===payment.token_contract.toLowerCase()&&
     log.topics?.length===3&&String(log.topics[0]).toLowerCase()===TRANSFER_TOPIC&&
     addressFromTopic(log.topics[1]).toLowerCase()===verification.treasury.toLowerCase()&&
@@ -251,4 +276,18 @@ export async function verifyRefund(payment:any,hash:string){
   if(logs.length!==1)throw new Error('Refund must transfer the full original token amount from the treasury to the original payment wallet.');
   const head=Number(await rpc(verification,'eth_blockNumber',[]));
   if(head-Number(receipt.blockNumber)+1<verification.confirmations)throw new Error('The refund needs more on-chain confirmations.');
+}
+
+export async function paymentPreflight(body:any){
+  const row:any=await checkoutRecord(String(body.id||''),String(body.secret||''));
+  if(!row)throw new Error('Reservation unavailable.');
+  const current=await config(),now=Date.now();
+  const campaign:any=await settleCampaign(now);
+  const slot:any=await db().prepare('SELECT order_id FROM slots WHERE id=?').bind(row.slot_number).first();
+  if(!ready(current)||campaign?.status!=='LIVE'||now>=campaign.ends_at||slot?.order_id!==row.id||row.reserved_until-now<60000)throw new Error('This checkout is closed or has less than one minute remaining. Do not send funds.');
+  if(row.payment_status!=='PENDING'||row.transaction_hash)throw new Error('This checkout already has a payment. Verify it instead of sending again.');
+  const verification=JSON.parse(row.verification_config);
+  const {asset}=paymentRail(row.chain_id,row.token);
+  if(verification.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS||row.token_contract.toLowerCase()!==asset.address.toLowerCase())throw new Error('Payment configuration changed. Do not send funds.');
+  return {treasury:verification.treasury,priceUnits:row.amount_units,chainId:row.chain_id,tokenAddress:row.token_contract};
 }
