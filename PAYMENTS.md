@@ -105,6 +105,20 @@ preserve its project ID, database, bucket, audience and prior migration history.
 
 ## Remaining live wallet test and operating limits
 
+The mobile interface uses an enlarged front/back shirt selector, 44px minimum
+shirt and close controls, 16px form inputs, safe-area margins and a sticky checkout
+header. VisualViewport sizing follows the available area when browser chrome or
+the keyboard changes; pinch zoom remains enabled. Technical fields disable
+autocapitalization and correction. Wallet addresses wrap in full and copy controls
+remain accessible. These changes do not change payment or auction rules.
+
+Responsive browser checks cover 320×568, 360×800, 390×844, 430×932, 768×1024,
+844×390, 1024×768 and 1440×900. No horizontal document overflow was observed;
+phone shirt targets measured 48–69px wide. Front/back switching opened the matching
+slot/price, the form scrolled with its 44px close control still visible, and the
+checkout resized to a reduced-height viewport. These are browser viewport checks,
+not physical iOS/Android or mobile-wallet tests.
+
 Before accepting public payments, Manish should verify that he controls the
 receiver on every enabled network. Run a staging checkout using testnet-specific
 contracts and a separate staging database; never add testnet tokens to production.

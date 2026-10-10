@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect */
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, ExternalLink, ShieldCheck, Wallet } from 'lucide-react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, ExternalLink, ShieldCheck, Wallet, X } from 'lucide-react';
 import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-networks';
 import { stringToHex } from 'viem';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 type Slot = {
   id: number;
@@ -93,6 +93,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const [copied, setCopied] = useState('');
   const [now, setNow] = useState(0);
   const [paying,setPaying]=useState(false);
+  const [viewportStyle,setViewportStyle]=useState<CSSProperties>({});
   const sending=useRef(false);
   const submitting=useRef(false);
   const checking=useRef(false);
@@ -101,6 +102,31 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   function remember(value: Reservation,hash='') {
     try { sessionStorage.setItem(savedKey,JSON.stringify({reservation:value,tx:hash})); } catch { /* Checkout still works when storage is unavailable. */ }
   }
+
+  useEffect(()=>{
+    if(!open)return;
+    const viewport=window.visualViewport;
+    let frame=0;
+    const update=()=>{
+      // Let pinch zoom behave normally; only follow keyboard/browser chrome changes.
+      if(viewport&&viewport.scale!==1)return;
+      setViewportStyle({
+        '--checkout-viewport-height':`${viewport?.height??window.innerHeight}px`,
+        '--checkout-viewport-top':`${viewport?.offsetTop??0}px`,
+      } as CSSProperties);
+    };
+    const schedule=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(update);};
+    update();
+    viewport?.addEventListener('resize',schedule);
+    viewport?.addEventListener('scroll',schedule);
+    window.addEventListener('resize',schedule);
+    return ()=>{
+      cancelAnimationFrame(frame);
+      viewport?.removeEventListener('resize',schedule);
+      viewport?.removeEventListener('scroll',schedule);
+      window.removeEventListener('resize',schedule);
+    };
+  },[open]);
 
   useEffect(() => {
     if (!open) return;
@@ -301,11 +327,14 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
   return (
     <Dialog open={open} onOpenChange={value=>{if(!paying&&!submitting.current)onOpenChange(value);}}>
-      <DialogContent className="checkout">
+      <DialogContent className="checkout" style={viewportStyle} showCloseButton={false}>
+        <div className="checkout-header">
         <div className="checkout-progress" aria-label="Checkout progress">
           <span className={!reservation ? 'active' : 'complete'}><b>01</b> DETAILS</span>
           <i aria-hidden="true" />
           <span className={reservation ? 'active' : ''}><b>02</b> PAYMENT</span>
+        </div>
+        <DialogClose className="checkout-close" aria-label="Close checkout" disabled={paying||(!reservation&&busy)}><X size={20} aria-hidden="true" /></DialogClose>
         </div>
 
         {confirmed ? (
@@ -336,12 +365,12 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{PAYMENT_NETWORKS.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>PAYMENT TOKEN<select value={selectedToken} onChange={event=>setSelectedToken(event.target.value)}>{network.tokens.map(item=><option key={item.symbol} value={item.symbol}>{item.label}</option>)}</select></label>
                   <p className="field-note full">{network.tokens.length===1?'USDC only on this network. ':''}Gas is paid in {network.gas}. Refunds return the same token on the original payment network.</p>
-                  <label>PROJECT NAME *<input name="project" placeholder="Example Protocol" required maxLength={120} autoComplete="organization" /></label>
-                  <label>X / TWITTER HANDLE *<input name="x" placeholder="@example" pattern="@[A-Za-z0-9_]{1,15}" required maxLength={16} /></label>
-                  <label className="full">PROJECT WEBSITE <span>OPTIONAL</span><input name="website" type="url" placeholder="https://example.com" maxLength={300} /></label>
-                  <label>CONTACT NAME *<input name="contact" placeholder="John" required maxLength={120} autoComplete="name" /></label>
-                  <label>EMAIL *<input name="email" type="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" /></label>
-                  <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required spellCheck={false} /></label>
+                  <label>PROJECT NAME *<input name="project" placeholder="Example Protocol" required maxLength={120} autoComplete="organization" enterKeyHint="next" /></label>
+                  <label>X / TWITTER HANDLE *<input name="x" placeholder="@example" pattern="@[A-Za-z0-9_]{1,15}" required maxLength={16} autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
+                  <label className="full">PROJECT WEBSITE <span>OPTIONAL</span><input name="website" type="url" inputMode="url" placeholder="https://example.com" maxLength={300} autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
+                  <label>CONTACT NAME *<input name="contact" placeholder="John" required maxLength={120} autoComplete="name" enterKeyHint="next" /></label>
+                  <label>EMAIL *<input name="email" type="email" inputMode="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" autoCapitalize="none" spellCheck={false} enterKeyHint="next" /></label>
+                  <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                 </div>
                 <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `CONNECTED ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
                 <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
@@ -383,7 +412,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                 </details>
 
                 <div className="verify-box">
-                  <label>TRANSACTION HASH<input value={tx} onChange={(event) => setTx(event.target.value)} placeholder="0x…" spellCheck={false} /></label>
+                  <label>TRANSACTION HASH<input value={tx} onChange={(event) => setTx(event.target.value)} placeholder="0x…" maxLength={66} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="done" /></label>
                   <button className="button slot-button" type="button" onClick={() => verifyPayment()} disabled={!tx || busy}>{busy ? 'VERIFYING…' : 'VERIFY PAYMENT'}</button>
                 </div>
 
