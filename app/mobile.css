@@ -1,7 +1,14 @@
 /* Responsive refinements use the existing cream, ink and accent tokens. */
+.mobile-header-actions { display: none; }
 .mobile-preview-controls { display: none; }
 
 .checkout {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
   width: calc(100% - 32px);
   overscroll-behavior: contain;
   scroll-padding-block: 88px 24px;
@@ -135,7 +142,8 @@
   .checkout {
     left: max(8px, env(safe-area-inset-left));
     top: calc(var(--checkout-viewport-top, 0px) + max(8px, env(safe-area-inset-top)));
-    translate: none;
+    /* No centering utility classes: their individual translate survived CSS
+       optimization on iOS even when translate:none was authored here. */
     transform: none;
     width: calc(100% - max(8px, env(safe-area-inset-left)) - max(8px, env(safe-area-inset-right)));
     max-width: 100% !important;
@@ -145,6 +153,10 @@
     animation: none;
     -webkit-overflow-scrolling: touch;
   }
+  .checkout .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .checkout .form-grid .full { grid-column: 1; }
+  .checkout > *, .checkout .sponsor-form > * { min-width: 0; }
+  .checkout :is(input, select, textarea) { max-width: 100%; box-sizing: border-box; }
   .checkout-header { top: -20px; margin: -20px -16px 0; padding: 8px 8px 8px 16px; gap: 8px; }
   .checkout-progress { font-size: 9px; letter-spacing: .04em; }
   .checkout-header .checkout-progress { gap: 8px; }
@@ -189,4 +201,158 @@
 @media (hover: none) {
   .button:hover:not(:disabled) { transform: none; }
   .button:active:not(:disabled), .preview-side-switch button:active { opacity: .8; }
+}
+
+.wallet-picker-modal { left: 50%; top: calc(var(--checkout-viewport-top,0px) + var(--checkout-viewport-height,100dvh)/2); transform: translate(-50%,-50%); width: calc(100% - 32px); max-width: 360px; max-height: calc(var(--checkout-viewport-height,100dvh) - 32px); overflow-y: auto; background: #F7F3EA; color: #17151D; border: 1px solid #DDD6C9; border-radius: 12px; padding: 20px; gap: 14px; min-width: 0; z-index: 60; }
+.wallet-picker-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wallet-picker-heading > button { background: transparent; border: 0; padding: 8px; color: inherit; }
+.wallet-options { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; }
+.wallet-options > :is(button,a) { display: flex; align-items: center; gap: 9px; min-height: 56px; padding: 12px; border: 1px solid #DDD6C9; border-radius: 6px; background: #FFFDF9; color: #17151D; text-decoration: none; text-align: left; font: inherit; }
+.wallet-options > :is(button,a):hover { border-color: var(--brand-accent); }
+.wallet-options span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.wallet-options small { display: block; font-size: 11px; color: #625D56; margin-top: 3px; }
+.wallet-options svg { flex-shrink: 0; }
+.wallet-copy-link { border: 0; background: transparent; text-align: left; padding: 8px 0; font: inherit; font-size: 11px; color: var(--brand-accent); text-decoration: underline; text-underline-offset: 4px; }
+@media (max-width: 480px) { .wallet-options {grid-template-columns: minmax(0,1fr);} }
+
+/* Mobile-only layout audit. Keep all desktop rules above 900px intact. */
+@media (max-width: 900px) {
+  html { scroll-padding-top: calc(112px + env(safe-area-inset-top)); }
+  .nav {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    height: auto;
+    min-height: 0;
+    gap: 0;
+    padding-block: max(8px, env(safe-area-inset-top)) 8px;
+  }
+  .nav .creator-brand {
+    min-width: 0;
+    min-height: 44px;
+    padding-right: 112px;
+    gap: 8px;
+    font-size: 12px;
+    letter-spacing: 0;
+  }
+  .nav .creator-avatar { width: 34px; height: 34px; flex-shrink: 0; }
+  .nav .navlinks {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    min-width: 0;
+    gap: 8px;
+    font-size: 11px;
+    letter-spacing: .02em;
+  }
+  .nav .navlinks > a:not(.nav-cta) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 6px 0;
+  }
+  .nav .navlinks .nav-cta {
+    position: absolute;
+    top: max(8px, env(safe-area-inset-top));
+    right: max(24px, env(safe-area-inset-right));
+    min-height: 44px;
+    margin: 0;
+    padding: 10px 12px;
+    font-size: 11px;
+  }
+  .about-intro { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .about-copy, .about-post, .deliverable, .fund > * { min-width: 0; }
+  .about-copy, .post-author, .about-post h3 { overflow-wrap: anywhere; }
+  .video-caption { flex-wrap: wrap; }
+  .faq-list { margin-left: 0; }
+  .wallet-picker-heading > button { min-width: 44px; min-height: 44px; flex-shrink: 0; }
+  .wallet-copy-link { min-height: 44px; overflow-wrap: anywhere; }
+}
+
+@media (max-width: 650px) {
+  .nav .navlinks .nav-cta { right: max(16px, env(safe-area-inset-right)); }
+  .auction-prices { grid-template-columns: minmax(0, 1fr); }
+  .auction-prices strong { overflow-wrap: anywhere; }
+  .about-videos, .about-posts { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .about-post { padding: 20px; }
+  footer.wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 16px;
+    padding-block: 28px max(24px, env(safe-area-inset-bottom));
+  }
+  footer.wrap > .footer-contact {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: 100%;
+    margin: 0;
+  }
+  footer.wrap > .footer-right { width: 100%; margin: 0; align-items: center; gap: 12px; }
+  footer .footer-legal { justify-content: center; flex-wrap: wrap; gap: 0 20px; }
+  footer .footer-legal a { font-size: 12px; }
+  footer .footer-social-pill { min-height: 36px; }
+}
+
+@media (max-width: 480px) {
+  .checkout-summary { flex-direction: column; }
+  .checkout-price-stack { width: 100%; text-align: left; }
+  .checkout-price-stack .checkout-price {
+    flex-direction: row;
+    justify-content: flex-start;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+/* Compact disclosure navigation exists only below the desktop breakpoint. */
+@media (max-width: 900px) {
+  html { scroll-padding-top: calc(76px + env(safe-area-inset-top)); }
+  .nav { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+  .nav .creator-brand { padding-right: 0; gap: 6px; font-size: 12px; }
+  .nav .creator-avatar { width: 32px; height: 32px; }
+  .nav .navlinks { display: none; }
+  .mobile-header-actions { display: flex; align-items: center; gap: 4px; }
+  .mobile-header-cta {
+    min-height: 40px;
+    padding: 9px 11px;
+    font-size: 11px;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .mobile-menu-toggle {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--foreground);
+    cursor: pointer;
+  }
+  .mobile-menu-toggle:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: -4px; }
+  .mobile-header-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: grid;
+    padding: 8px max(24px, env(safe-area-inset-right)) 12px max(24px, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border);
+    background: var(--background);
+  }
+  .mobile-header-menu a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 8px 0;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .mobile-header-menu a:hover, .mobile-header-menu a:focus-visible { color: var(--brand-accent); }
 }

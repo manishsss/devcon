@@ -1,7 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { cancelCheckout } from '@/lib/checkout-cancellation';
+import { queueSponsorCancellation } from '@/lib/sponsor-cancellation';
+import { recordVerifiedRefund } from '@/lib/refund-confirmation';
 import { env } from 'cloudflare:workers';
-import {paymentPreflight,verifyPayment,verifyRefund,monitorPayments} from '@/lib/payment';
-import {admin,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
+import {paymentPreflight,verifyPayment,monitorPayments} from '@/lib/payment';
+import {admin,closeManualAuction,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
 import {AUCTION_DURATION_MS,USDC_SCALE,claimPriceUnits,formatUsdcUnits,initialPriceUnits} from '@/lib/auction';
 import { paymentRail } from '@/lib/payment-networks';
 import { checkoutDigest,createAuthorization,verifyAuthorization } from '@/lib/checkout-authorization';
@@ -123,10 +126,13 @@ async function route(request:Request,context:any){
         await db().prepare('INSERT INTO settings(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').bind(JSON.stringify(next)).run();
         return json({ok:true});
       }
+      if(endpoint==='admin/auction/close'){
+        return json({ok:true,auction:await closeManualAuction()});
+      }
       if(endpoint==='admin/auction/launch'){
         const current=await config();
         validateConfig(current);
-        const now=Date.now(),endsAt=now+AUCTION_DURATION_MS;
+        const now=Date.now(),endsAt=(env as any).MANUAL_AUCTION_ENABLED==='1'?null:now+AUCTION_DURATION_MS;
         const result=await db().prepare("UPDATE auction_campaign SET status='LIVE',starts_at=?,ends_at=? WHERE id=1 AND status='UPCOMING' AND starts_at IS NULL").bind(now,endsAt).run();
         if(!result.meta.changes)throw new Error('The auction has already been launched and cannot be restarted.');
         return json({ok:true,startsAt:now,endsAt});
@@ -146,6 +152,7 @@ async function route(request:Request,context:any){
         const emailSent=await sendSponsorEmail(sponsor.email,'Devcon sponsorship logo update',`Your uploaded logo was ${human}. Contact Manish if a replacement is needed.`);
         return json({ok:true,emailSent});
       }
+      if(endpoint==='admin/cancel-sponsor') return json(await queueSponsorCancellation(String(body.paymentId||''),String(body.reason||'')));
       if(endpoint==='admin/refund'){
         if(!['REFUND_PROCESSING','REFUNDED','REFUND_FAILED'].includes(body.status))throw new Error('Choose a valid refund status.');
         const payment:any=await db().prepare("SELECT p.*,sp.status AS sponsorship_status FROM payments p JOIN sponsorships sp ON sp.id=p.sponsorship_id WHERE p.id=? AND p.refund_status!='NONE'").bind(body.paymentId).first();
@@ -155,14 +162,15 @@ async function route(request:Request,context:any){
         const refundTx=String(body.refundTx||'').trim().toLowerCase();
         if(body.status==='REFUNDED'&&!/^0x[0-9a-fA-F]{64}$/.test(refundTx))throw new Error('Record the confirmed on-chain refund transaction hash.');
         if(body.status==='REFUND_FAILED'&&!note)throw new Error('Record why the refund failed.');
-        if(body.status==='REFUNDED')await verifyRefund(payment,refundTx);
+        if(body.status==='REFUNDED'){
+          await recordVerifiedRefund(payment,refundTx,note);
+          return json({ok:true});
+        }
         const now=Date.now();
         await db().batch([
           db().prepare(`UPDATE payments SET refund_status=?,refund_transaction_hash=?,refund_note=?,refund_error=?,refund_updated_at=? WHERE id=? AND refund_status!='REFUNDED'`)
             .bind(body.status,refundTx||null,note||null,body.status==='REFUND_FAILED'?note:null,now,payment.id),
-          body.status==='REFUNDED'
-            ? db().prepare("UPDATE sponsorships SET status=CASE WHEN status='REFUND_PENDING' THEN 'REFUNDED' ELSE status END,updated_at=? WHERE id=?").bind(now,payment.sponsorship_id)
-            : db().prepare('UPDATE sponsorships SET updated_at=? WHERE id=?').bind(now,payment.sponsorship_id),
+          db().prepare('UPDATE sponsorships SET updated_at=? WHERE id=?').bind(now,payment.sponsorship_id),
         ]);
         return json({ok:true});
       }
@@ -179,10 +187,10 @@ async function route(request:Request,context:any){
       const campaign:any=await settleCampaign(now);
       const current=await config();
       if(!ready(current))return json({error:'Payment configuration is incomplete. The private administrator must configure the treasury before the auction can launch.'},503);
-      if(campaign?.status!=='LIVE'||!campaign.ends_at||now>=campaign.ends_at)return json({error:campaign?.status==='UPCOMING'?'The four-day auction has not launched yet.':'The auction is closed. No new claims are accepted.'},409);
+      if(campaign?.status!=='LIVE'||(campaign.ends_at!==null&&now>=campaign.ends_at))return json({error:campaign?.status==='UPCOMING'?'The four-day auction has not launched yet.':'The auction is closed. No new claims are accepted.'},409);
       const form=await limitedForm(request,(current.maxUploadMB*1048576)+65536),slotNumber=Number(form.get('slot'));
       const {network,asset}=paymentRail(form.get('chainId'),form.get('token'));
-      const rail={rpc:current.rpcByChain[network.id]};
+      const rail={rpc:current.rpcByChain[network.id],chainId:network.id};
       if(!Number.isInteger(slotNumber)||slotNumber<1||slotNumber>8)throw new Error('Choose one of the eight sponsorship slots.');
       const values={
         project:String(form.get('project')||'').trim(),
@@ -211,14 +219,14 @@ async function route(request:Request,context:any){
       const priceDisplay=displayUnits(requiredUnits);
       const origin=new URL(request.url).origin;
       const digest=await checkoutDigest(form,origin,current.treasury,requiredUnits.toString());
-      if(endpoint==='checkout/authorize')return json(await createAuthorization({wallet:values.wallet,digest,origin,treasury:current.treasury,price:priceDisplay,project:values.project,slot:slotNumber,network:network.name,chainId:network.id,expiresAt:Math.min(Date.now()+300000,campaign.ends_at)}));
+      if(endpoint==='checkout/authorize')return json(await createAuthorization({wallet:values.wallet,digest,origin,treasury:current.treasury,price:priceDisplay,project:values.project,slot:slotNumber,network:network.name,chainId:network.id,expiresAt:Math.min(Date.now()+300000,campaign.ends_at??Infinity)}));
       const authorizationId=await verifyAuthorization(form,values.wallet,digest);
       if(Number(await rpc(rail,'eth_chainId',[]))!==network.id)throw new Error('The selected network is unavailable. No payment has been requested.');
       if(Number(await rpc(rail,'eth_call',[{to:asset.address,data:'0x313ce567'},'latest']))!==asset.decimals)throw new Error('Token validation failed. No payment has been requested.');
       const balance=BigInt(await rpc(rail,'eth_call',[{to:asset.address,data:'0x70a08231'+values.wallet.slice(2).toLowerCase().padStart(64,'0')},'latest']));
       if(balance<requiredUnits)throw new Error('Your wallet needs at least '+priceDisplay+' USDC on '+network.name+' before reserving this spot.');
       const sponsorId=crypto.randomUUID(),sponsorshipId=crypto.randomUUID(),paymentId=crypto.randomUUID(),secret=crypto.randomUUID();
-      const createdAt=Date.now(),reservedUntil=Math.min(createdAt+current.reservationMinutes*60000,campaign.ends_at),logoKey=sponsorId;
+      const createdAt=Date.now(),reservedUntil=Math.min(createdAt+current.reservationMinutes*60000,campaign.ends_at??Infinity),logoKey=sponsorId;
       if(reservedUntil<=createdAt)return json({error:'The auction is closed.'},409);
       const startBlock=Number(await rpc(rail,'eth_blockNumber',[]));
       const snapshot={startBlock,scanBlock:startBlock,chainName:network.name,chainId:network.id,rpc:rail.rpc,explorer:network.explorer,tokenAddress:asset.address,token:asset.symbol,treasury:current.treasury,decimals:asset.decimals,confirmations:network.confirmations};
@@ -230,7 +238,7 @@ async function route(request:Request,context:any){
           AND EXISTS(SELECT 1 FROM checkout_authorizations WHERE id=? AND consumed_by=?)
           AND NOT EXISTS(SELECT 1 FROM sponsorships sp JOIN payments p ON p.sponsorship_id=sp.id
             WHERE LOWER(p.wallet_address)=? AND sp.status IN ('RESERVED','PAYMENT_PENDING') AND sp.reserved_until>?)
-          AND EXISTS(SELECT 1 FROM auction_campaign WHERE id=1 AND status='LIVE' AND ends_at>?)`)
+          AND EXISTS(SELECT 1 FROM auction_campaign WHERE id=1 AND status='LIVE' AND (ends_at IS NULL OR ends_at>?))`)
           .bind(sponsorshipId,reservedUntil,slotNumber,slot.holder_sponsorship_id||null,slot.current_price_units||null,authorizationId,sponsorshipId,values.wallet,createdAt,createdAt),
         db().prepare('INSERT INTO sponsors(id,project_name,x_handle,website,contact_name,email,wallet_address,logo_url,logo_status,description,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)').bind(sponsorId,values.project,values.x,values.website||null,values.contact,values.email,values.wallet,logoKey,'PENDING_REVIEW',values.description,createdAt,slotNumber,sponsorshipId),
         db().prepare("INSERT INTO sponsorships(id,secret,slot_number,position,price_usd,claim_price_units,previous_holder_sponsorship_id,is_challenge,status,sponsor_id,reserved_until,terms_accepted,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,'RESERVED',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)").bind(sponsorshipId,secret,slotNumber,positions[slotNumber-1],Number(requiredUnits/USDC_SCALE),requiredUnits.toString(),slot.holder_sponsorship_id||null,slot.holder_sponsorship_id?1:0,sponsorId,reservedUntil,1,createdAt,createdAt,slotNumber,sponsorshipId),
@@ -258,6 +266,7 @@ async function route(request:Request,context:any){
       const body=await request.json();
       return json(await verifyPayment(body));
     }
+    if(request.method==='POST'&&endpoint==='checkout/cancel')return json(await cancelCheckout(await request.json()));
     if(request.method==='POST'&&endpoint==='checkout/preflight')return json(await paymentPreflight(await request.json()));
     return json({error:'Not found.'},404);
   }catch(error:any){

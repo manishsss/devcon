@@ -1,11 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/set-state-in-effect */
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ShieldCheck, Play, ArrowUpRight } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Progress } from '@/components/ui/progress';
 import SponsorshipCheckout from '@/components/sponsorship-checkout';
+import MobileHeaderActions from '@/components/mobile-header-actions';
+import { projectLink } from '@/lib/project-link';
 import { useScrollReveal } from '@/lib/use-scroll-reveal';
 
 const aboutPosts = [
@@ -32,6 +34,7 @@ type Slot = {
   project: string | null;
   logo: string | null;
   x?: string | null;
+  website?: string | null;
   checkoutInProgress: boolean;
   canClaim: boolean;
 };
@@ -101,6 +104,7 @@ export default function Home() {
   const [data, setData] = useState<Inventory>(initialData);
   const [error, setError] = useState('');
   const [chosen, setChosen] = useState<Slot | null>(null);
+  const resumedWalletLink=useRef(false);
   const [previewSide, setPreviewSide] = useState<'front' | 'back'>('front');
 
   async function refresh() {
@@ -120,6 +124,18 @@ export default function Home() {
     const refreshTimer = window.setInterval(refresh, 15000);
     return () => window.clearInterval(refreshTimer);
   }, []);
+
+  useEffect(()=>{
+    if(resumedWalletLink.current || !data.serverNow)return;
+    resumedWalletLink.current=true;
+    const url=new URL(window.location.href);
+    const slotId=Number(url.searchParams.get('checkoutSlot'));
+    const selected=data.slots.find(item=>item.id===slotId);
+    if(selected && selected.canClaim)setChosen(selected);
+    // The link selects a spot only: server prices and wallet proof remain authoritative.
+    url.searchParams.delete('checkoutSlot');
+    window.history.replaceState(window.history.state,'',url);
+  },[data.serverNow,data.slots]);
 
   useEffect(() => {
     const context = (document as any).modelContext;
@@ -165,6 +181,7 @@ export default function Home() {
           <a href="#about">ABOUT</a>
           <a className="button primary nav-cta" href="#spots">Get a spot</a>
         </div>
+        <MobileHeaderActions />
       </nav>
 
       <section className="hero wrap centered-portrait-hero">
@@ -176,7 +193,7 @@ export default function Home() {
               <button type="button" aria-pressed={previewSide==='front'} aria-controls="shirt-front" onClick={()=>setPreviewSide('front')}>FRONT <span>01–04</span></button>
               <button type="button" aria-pressed={previewSide==='back'} aria-controls="shirt-back" onClick={()=>setPreviewSide('back')}>BACK <span>05–08</span></button>
             </div>
-            <p>Tap a price to choose your spot.</p>
+            <p>Tap a slot to choose your spot.</p>
           </div>
           <div className="portrait-pair">
           {['front', 'back'].map(side => (
@@ -184,10 +201,9 @@ export default function Home() {
             <img src={side === 'front' ? '/manish-front-cutout.png' : '/manish-back-cutout.png'} width="1024" height="1536" decoding="async" fetchPriority={side==='front'?'high':'low'} alt={`Manish wearing the sponsorship T-shirt, ${side} placement preview`} />
             <div className="shirt-slots">
               {data.slots.filter(slot => side === 'front' ? slot.id <= 4 : slot.id > 4).map(slot => (
-                <button key={slot.id} className={`print-slot ${slot.status === 'HELD' ? 'held' : ''}`} disabled={!canOpenSlot(slot)} onClick={() => claim(slot)} aria-label={`Slot ${slot.id}, ${slot.position}, claim price $${slot.claimPrice}, ${slot.status}`}>
-                  {slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <><span className="slot-plus">{slot.status==='HELD'?'×1.5':'+'}</span><span>SLOT {String(slot.id).padStart(2, '0')}</span><b>${slot.claimPrice}</b></>}
-                  {slot.status !== 'AVAILABLE' && <small>{slot.status==='HELD'?'NEXT CLAIM':slot.status}</small>}
-                </button>
+                <a key={slot.id} className={`print-slot ${slot.holder ? 'held' : ''}`} href={slot.holder ? (projectLink(slot) || undefined) : '#spots'} target={slot.holder ? '_blank' : undefined} rel={slot.holder ? 'noopener noreferrer' : undefined} aria-label={slot.holder ? `Visit ${slot.project}` : `View sponsorship spots, slot ${slot.id}`}>
+                  {slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <span>SLOT {String(slot.id).padStart(2, '0')}</span>}
+                </a>
               ))}
             </div>
           </div>
@@ -230,7 +246,7 @@ export default function Home() {
           {data.slots.map(slot => {
             const held = Boolean(slot.project && slot.status === 'HELD');
             return <article key={slot.id} className={held ? '' : 'lineup-open'}>
-              {held && slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <div className="lineup-placeholder" aria-hidden="true">{String(slot.id).padStart(2, '0')}</div>}
+              {held && slot.logo ? <a href={projectLink(slot) || undefined} target="_blank" rel="noopener noreferrer"><img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /></a> : <div className="lineup-placeholder" aria-hidden="true">{String(slot.id).padStart(2, '0')}</div>}
               <h3>{held ? slot.project : 'Your project here'}</h3>
               <span>SLOT {String(slot.id).padStart(2, '0')}{held ? ` · $${slot.currentPrice}` : ''}</span>
             </article>;
@@ -308,7 +324,16 @@ export default function Home() {
 
 
 
-      <footer className="wrap"><div className="footer-contact">DMs open: <a href="https://t.me/manishweb3" target="_blank" rel="noreferrer">Manish</a></div><div className="footer-legal"><a href="/terms">Terms</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div><a className="admin-link" href="/admin">Admin</a></footer>
+      <footer className="wrap"><div className="footer-contact">DMs open: <a href="https://t.me/manishweb3" target="_blank" rel="noreferrer">Manish</a></div>
+        <div className="footer-right">
+          <a className="footer-social-pill" href="https://x.com/web3manish" target="_blank" rel="noopener noreferrer" aria-label="Web3Manish on X (opens in a new tab)">
+            {/* Twitter brand mark from Simple Icons, CC0: https://github.com/simple-icons/simple-icons/blob/11.15.0/icons/twitter.svg */}
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21.543 7.104c.015.211.015.423.015.636 0 6.507-4.954 14.01-14.01 14.01v-.003A13.94 13.94 0 0 1 0 19.539a9.88 9.88 0 0 0 7.287-2.041 4.93 4.93 0 0 1-4.6-3.42 4.916 4.916 0 0 0 2.223-.084A4.926 4.926 0 0 1 .96 9.167v-.062a4.887 4.887 0 0 0 2.235.616A4.928 4.928 0 0 1 1.67 3.148 13.98 13.98 0 0 0 11.82 8.292a4.929 4.929 0 0 1 8.39-4.49 9.868 9.868 0 0 0 3.128-1.196 4.941 4.941 0 0 1-2.165 2.724A9.828 9.828 0 0 0 24 4.555a10.019 10.019 0 0 1-2.457 2.549z"/></svg>
+            <span>@web3manish</span>
+          </a>
+          <div className="footer-legal"><a href="/terms">Terms</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div>
+        </div>
+      </footer>
 
       <SponsorshipCheckout
         open={Boolean(chosen)}

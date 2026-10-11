@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import SiteAnalytics from "@/components/site-analytics";
 import "./globals.css";
 import "./mobile.css";
 
@@ -26,7 +27,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-palette="burgundy" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{__html: `(function(){try{var p=localStorage.getItem('devcon-accent');if(p==='orange'||p==='burgundy')document.documentElement.dataset.palette=p;}catch(e){}})();`}} /></head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">{children}<SiteAnalytics /></body>
     </html>
   );
 }

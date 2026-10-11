@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { privateKeyToAccount } from 'viem/accounts';
 import { env } from './runtime.mjs';
 import { database } from './database.mjs';
-import { initialize } from '../lib/campaign';
+import { PAYMENT_NETWORKS } from '../lib/payment-networks';
+import { inventory, initialize } from '../lib/campaign';
 import { POST } from '../app/api/[...path]/route';
 
 // Public test-only signing keys. They never hold real funds.
@@ -102,6 +103,8 @@ test('expired signatures and quotes with a changed price cannot reserve', async 
   db.sqlite.prepare('UPDATE checkout_authorizations SET expires_at=? WHERE id=?').run(Date.now()-1,challenge.id);
   assert.equal((await post('reserve', body)).status,400);
   await authorize(body);
+  db.sqlite.prepare("INSERT INTO sponsors(id,project_name,x_handle,contact_name,email,wallet_address,logo_url,created_at) VALUES('previous','Previous','@previous','Previous','previous@example.com','0x1111111111111111111111111111111111111111','logo',0)").run();
+  db.sqlite.prepare("INSERT INTO sponsorships(id,secret,slot_number,position,price_usd,sponsor_id,reserved_until,created_at,updated_at) VALUES('previous','previous',1,'Front',350,'previous',0,0,0)").run();
   db.sqlite.prepare("UPDATE slots SET current_price_units='350000000',holder_sponsorship_id='previous' WHERE id=1").run();
   assert.equal((await post('reserve', body)).status,400);
 });
@@ -139,4 +142,77 @@ test('one funded wallet cannot hold multiple unpaid spots through separate signa
   assert.equal(responses.filter(response=>response.status===200).length,1);
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM sponsorships').get()!.count,1);
   assert.equal(uploads.size,1);
+});
+
+
+for(const network of PAYMENT_NETWORKS)test(`${network.name} signed checkout recovers when the configured primary RPC returns HTTP 503`,async()=>{
+ const body=form();body.set('chainId',String(network.id));await authorize(body);
+ const normalFetch=globalThis.fetch;
+ (env as any)[`CHAIN_RPC_URL_${network.id}`]='https://unavailable.example';
+ globalThis.fetch=async(input,init)=>{
+  if(String(input)==='https://unavailable.example')return new Response('',{status:503});
+  if(JSON.parse(String(init?.body)).method==='eth_chainId')return Response.json({jsonrpc:'2.0',id:1,result:'0x'+network.id.toString(16)});
+  return normalFetch(input,init);
+ };
+ let response:Response;
+ try { response=await post('reserve',body); } finally { delete (env as any)[`CHAIN_RPC_URL_${network.id}`]; }
+ assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
+ assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM sponsorships').get()!.count,1);
+ assert.equal(uploads.size,1);
+});
+
+
+test('new reservations last five minutes even when saved settings still contain fifteen',async()=>{
+ (env as any).RESERVATION_MINUTES='5';
+ try {
+  db.sqlite.prepare('INSERT INTO settings(id,value) VALUES(1,?)').run(JSON.stringify({reservationMinutes:15}));
+  const body=form();await authorize(body);
+  assert.equal((await post('reserve',body)).status,200);
+  const reservation:any=db.sqlite.prepare('SELECT created_at,reserved_until FROM sponsorships').get();
+  assert.equal(reservation.reserved_until-reservation.created_at,5*60000);
+ }finally{delete (env as any).RESERVATION_MINUTES;}
+});
+
+
+async function cancelReservation(id:string,secret:string){
+ return POST(new Request('https://site.test/api/checkout/cancel',{method:'POST',headers:{origin:'https://site.test','content-type':'application/json'},body:JSON.stringify({id,secret})}),{params:Promise.resolve({path:['checkout','cancel']})});
+}
+
+test('cancel releases an unpaid reservation immediately; concurrent retries cannot release a later checkout',async()=>{
+ const body=form();await authorize(body);
+ const reserved=await (await post('reserve',body)).json() as {id:string;secret:string};
+ const cancellations=await Promise.all([cancelReservation(reserved.id,reserved.secret),cancelReservation(reserved.id,reserved.secret)]);
+ for(const response of cancellations){assert.equal(response.status,200);assert.equal((await response.json() as any).released,true);}
+ assert.equal((await inventory()).slots[0].checkoutInProgress,false);
+ assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM payments').get()!.count,1);
+ assert.equal(db.sqlite.prepare('SELECT status FROM payments').get()!.status,'CANCELLED');
+ const next=form();await authorize(next);assert.equal((await post('reserve',next)).status,200);
+ const newOrder=db.sqlite.prepare('SELECT order_id FROM slots WHERE id=1').get()!.order_id;
+ await cancelReservation(reserved.id,reserved.secret);
+ assert.equal(db.sqlite.prepare('SELECT order_id FROM slots WHERE id=1').get()!.order_id,newOrder);
+});
+
+for(const state of ['PAYMENT_DETECTED','CONFIRMING','CONFIRMED','hash bound'])test(`cancel refuses to release a ${state} payment`,async()=>{
+ const body=form();await authorize(body);const reserved=await (await post('reserve',body)).json() as any;
+ if(state==='hash bound')db.sqlite.prepare("UPDATE payments SET transaction_hash=?").run('0x'+'a'.repeat(64));
+ else db.sqlite.prepare('UPDATE payments SET status=?').run(state);
+ const response=await cancelReservation(reserved.id,reserved.secret);
+ assert.equal((await response.json() as any).released,false);
+ assert.equal(db.sqlite.prepare('SELECT order_id FROM slots WHERE id=1').get()!.order_id,reserved.id);
+});
+
+test('an incorrect cancellation secret cannot release another reservation',async()=>{
+ const body=form();await authorize(body);const reserved=await (await post('reserve',body)).json() as any;
+ assert.equal((await cancelReservation(reserved.id,'wrong')).status,400);
+ assert.equal(db.sqlite.prepare('SELECT order_id FROM slots WHERE id=1').get()!.order_id,reserved.id);
+});
+
+
+test('cancelling an expired unpaid checkout also releases its payer intent without touching a newer reservation',async()=>{
+ const body=form();await authorize(body);const reserved=await (await post('reserve',body)).json() as any;
+ db.sqlite.prepare("UPDATE sponsorships SET reserved_until=? WHERE id=?").run(Date.now()-1,reserved.id);
+ await initialize();
+ assert.equal(db.sqlite.prepare('SELECT status FROM payments').get()!.status,'EXPIRED');
+ assert.equal((await (await cancelReservation(reserved.id,reserved.secret)).json() as any).released,true);
+ const next=form();await authorize(next);assert.equal((await post('reserve',next)).status,200);
 });

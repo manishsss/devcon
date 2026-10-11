@@ -1,0 +1,3 @@
+import {spawnSync} from 'node:child_process';import {existsSync} from 'node:fs';
+const files=['security','abuse','images','storage','admin-auth','constraints','recovery','monitoring','reconciliation','refund','payment-discovery','auction','payment-networks','payment'];
+for(const name of files){const file=`tests/${name}.mjs`;if(!existsSync(file))continue;const r=spawnSync(process.execPath,[file],{encoding:'utf8'});if(r.status){process.stderr.write(r.stdout+r.stderr);process.exit(r.status||1);}const count=/(?:ℹ tests |# tests )(\d+)/.exec(r.stdout)||/(\d+) .*checks passed/.exec(r.stdout);console.log(`${name}: PASS${count?' ('+count[1]+')':''}`);}

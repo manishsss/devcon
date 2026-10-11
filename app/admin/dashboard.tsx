@@ -118,6 +118,7 @@ export default function Dashboard() {
                 if(window.confirm('Launch the four-day auction now? The server deadline will be permanent.'))save('auction/launch',{},'The four-day auction is live.');
               }}>LAUNCH 4-DAY AUCTION</button>
             </> : <div className="record-grid"><div><span>STARTED</span><p>{when(data.inventory.auction.startsAt)}</p></div><div><span>ENDS</span><p>{when(data.inventory.auction.endsAt)}</p></div><div><span>FINALIZED</span><p>{when(data.inventory.auction.finalizedAt)}</p></div><div><span>FINAL VALUE</span><p>{data.inventory.auction.finalValue?`$${data.inventory.auction.finalValue}`:'Not set'}</p></div></div>}
+            {data.inventory.auction.status==='LIVE' && data.inventory.auction.endsAt===null && <button className="button primary" disabled={busy} onClick={()=>{if(window.confirm('Close purchases now? Current holders will be finalized and the funding condition evaluated. This cannot be undone.'))save('auction/close',{},'Purchases are closed.');}}>CLOSE AUCTION</button>}
           </section>
 
           <form className="panel admin-config" key={JSON.stringify(data.config)} onSubmit={event => {
@@ -189,6 +190,11 @@ export default function Dashboard() {
                       <button className="button" disabled={busy} onClick={() => save('review', { sponsorId: holder.sponsorId, action: 'REJECTED' }, 'Logo rejected.')}>REJECT</button>
                     </div>
                     <form className="replacement-form" onSubmit={event => replaceLogo(event, holder.sponsorId)}><label>REPLACE LOGO<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /></label><button className="button" disabled={busy}>UPLOAD</button></form>
+                    <p className="small muted">Rejecting a logo only hides it. To cancel the sponsorship and release the spot, queue a full refund below.</p>
+                    <button className="button" disabled={busy || slot?.checkoutInProgress || holder.refundStatus!=='NONE' || data.inventory.auction.status!=='LIVE'} onClick={() => {
+                      const reason=window.prompt('Reason for cancelling this sponsorship and queuing its full refund:');
+                      if(reason?.trim() && window.confirm(`Release Slot ${String(rawSlot.id).padStart(2,'0')} and queue $${money(holder.claimPriceUnits)} for refund? This does not send funds.`))save('cancel-sponsor',{paymentId:holder.paymentId,reason},'Sponsorship cancelled. Full refund queued in Payments and refunds.');
+                    }}>CANCEL & QUEUE REFUND</button>
                   </div>
                 </div>}
               </section>;
@@ -213,6 +219,7 @@ export default function Dashboard() {
               if(window.confirm(question))save('refund',{paymentId:claim.paymentId,status,refundTx,note},`Refund status changed to ${human(status)}.`);
             }}>
               <div><span className="mono">SLOT {String(claim.slotId).padStart(2,'0')} · {claim.project}</span><p>${money(claim.refundAmountUnits||claim.claimPriceUnits)} {claim.token} on {claim.chain} · {human(claim.refundStatus)}</p></div>
+              <div className="wide"><span>REFUND DESTINATION</span><p className="break">{claim.wallet}</p></div>
               <label>STATUS<select name="status" defaultValue={claim.refundStatus==='REFUNDED'?'REFUNDED':'REFUND_PROCESSING'}><option value="REFUND_PROCESSING">REFUND PROCESSING</option><option value="REFUNDED">REFUNDED</option><option value="REFUND_FAILED">REFUND FAILED</option></select></label>
               <label>ON-CHAIN REFUND TX<input name="refundTx" defaultValue={claim.refundTx||''} placeholder="Required when refunded" /></label>
               <label>NOTE / FAILURE REASON<input name="note" defaultValue={claim.refundNote||claim.refundError||''} placeholder="Required if failed" /></label>

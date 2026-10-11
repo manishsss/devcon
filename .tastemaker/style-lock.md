@@ -1,5 +1,21 @@
 # Devcon sponsorship style lock
 
+## Mobile header revision — October 11, 2026
+
+User rejected the tall two-row mobile header. Through 900px use a single row
+with 32px avatar/name, compact burgundy CTA, and 44px hamburger target. Section
+links appear in a flat cream disclosure below the pinned header; selection,
+outside press or Escape closes it. Keep original desktop navigation untouched.
+
+## Mobile refinement — October 11, 2026
+
+Through 900px, keep branding and the claim CTA on the first header row and
+all three section links on a balanced second row. Resolve conflicting visibility
+rules explicitly. On phones, center the footer contact, compact social pill and
+inline legal links; stack card prices and narrow checkout summaries so large
+takeover amounts can wrap. Keep the existing palette, copy, portrait behavior,
+desktop styling and payment logic. Browser visual QA remains unavailable.
+
 ## Direction
 
 - Thesis: a premium independent Web3 campaign reduced to cream, near-black and one restrained orange accent, with the physical black shirt as the hero object.
@@ -57,3 +73,21 @@ keep both portraits on desktop. Shirt targets and checkout controls are at least
 padding and a sticky close/progress header. At phone widths the palette switch
 belongs after the footer so it cannot cover campaign content. Payment amounts,
 verification and auction behavior are unchanged.
+
+## Why / About editorial motion
+
+2026-10-11: Reuse the existing IntersectionObserver/CSS reveal engine for these
+bounded additions. Reveal chapter headings, paragraphs, videos and posts once
+with 12px travel, 240ms ease-out and 60ms desktop pair stagger. Keep the established
+cream/black/burgundy palette, content and layout. Fine-pointer hover: 2px post
+lift, 2.5% video crop zoom, burgundy title/rule feedback and a short link underline.
+Keyboard focus remains visible; reduced motion removes all movement. No shadows,
+glow, parallax, pinned sections or extra animation dependencies.
+
+## Footer social link
+
+2026-10-11: User supplied a reference for a near-black pill with a light Twitter
+bird and handle. Use @web3manish above the horizontal legal links, aligned right.
+This specific social link may use a fully rounded pill, overriding the ordinary
+8px control radius. Keep cream labels, burgundy hover/focus, and the Telegram
+contact on the left. No other palette, structure or typography changes.

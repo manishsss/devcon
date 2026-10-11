@@ -5,6 +5,7 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, ExternalLink, ShieldCheck, Wallet, X } from 'lucide-react';
 import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-networks';
 import { stringToHex } from 'viem';
+import { discoverWallets, mobileWalletLinks, walletCheckoutUrl, type WalletOption, type WalletProvider } from '@/lib/wallet-discovery';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 
 type Slot = {
@@ -78,6 +79,7 @@ const statusLabel = (status: string) => ({
   LATE_CONFIRMED: 'REFUND PENDING',
   FAILED: 'TRANSACTION FAILED',
   EXPIRED: 'RESERVATION EXPIRED',
+  CANCELLED: 'RESERVATION CANCELLED',
 }[status] || status.replaceAll('_', ' '));
 
 export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsOpen, onOpenChange, onConfirmed }: Props) {
@@ -94,13 +96,27 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const [now, setNow] = useState(0);
   const [paying,setPaying]=useState(false);
   const [viewportStyle,setViewportStyle]=useState<CSSProperties>({});
+  const [walletOptions,setWalletOptions]=useState<WalletOption[]>([]);
+  const [walletPicker,setWalletPicker]=useState(false);
+  const [walletName,setWalletName]=useState('');
+  const [walletLinks,setWalletLinks]=useState<{name:string;href:string}[]>([]);
+  const provider=useRef<WalletProvider|null>(null);
+  const mobileWalletUI=()=> /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (window.matchMedia('(pointer: coarse)').matches && window.innerWidth<=900);
+  useEffect(()=>discoverWallets(window,setWalletOptions),[]);
+  useEffect(()=>{
+    if(!open||!slot)return;
+    setWalletLinks(mobileWalletLinks(walletCheckoutUrl(window.location.origin,slot.id,chainId)));
+  },[open,slot?.id,chainId]);
+  useEffect(()=>{setWalletPicker(false);},[open,slot?.id]);
   const sending=useRef(false);
   const submitting=useRef(false);
   const checking=useRef(false);
+  const cancelling=useRef(false);
+  const paymentUncertain=useRef(false);
   const savedKey=slot?`devcon-checkout:${slot.id}`:'';
 
   function remember(value: Reservation,hash='') {
-    try { sessionStorage.setItem(savedKey,JSON.stringify({reservation:value,tx:hash})); } catch { /* Checkout still works when storage is unavailable. */ }
+    try { sessionStorage.setItem(savedKey,JSON.stringify({reservation:value,tx:hash,paymentUncertain:paymentUncertain.current})); } catch { /* Checkout still works when storage is unavailable. */ }
   }
 
   useEffect(()=>{
@@ -130,6 +146,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
   useEffect(() => {
     if (!open) return;
+    paymentUncertain.current=false;
     setReservation(null);
     setVerification(null);
     setBusy(false);
@@ -138,9 +155,12 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     setError('');
     setCopied('');
     setNow(Date.now());
+    const requestedChain=Number(new URLSearchParams(window.location.search).get('checkoutChain'));
+    if(PAYMENT_NETWORKS.some(item=>item.id===requestedChain))setChainId(requestedChain);
     try {
       const saved=JSON.parse(sessionStorage.getItem(`devcon-checkout:${slot?.id}`)||'null');
       if(saved?.reservation?.id&&saved.reservation.secret&&saved.reservation.treasury?.toLowerCase()===TREASURY_WALLET_ADDRESS&&PAYMENT_NETWORKS.some(item=>item.id===saved.reservation.chainId)){
+        paymentUncertain.current=Boolean(saved.paymentUncertain);
         setReservation(saved.reservation);
         setTx(saved.tx||'');
         setWallet(saved.reservation.wallet);
@@ -163,21 +183,72 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const visibleStatus = reservation && remaining === 0 && !tx && status === 'PENDING' ? 'EXPIRED' : status;
   const connected = useMemo(() => wallet && reservation && wallet.toLowerCase() === reservation.wallet.toLowerCase(), [wallet, reservation]);
 
-  async function connectWallet() {
-    setError('');
-    try {
-      const ethereum = (window as any).ethereum;
-      if (!ethereum) throw new Error('Open this site in your wallet’s browser or use a browser wallet to sign your checkout.');
-      const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
-      const account = String(accounts?.[0] || '');
-      if (!account) throw new Error('Your wallet did not return an account.');
-      setWallet(account);
-      if (reservation && account.toLowerCase() !== reservation.wallet.toLowerCase()) {
-        throw new Error('Connect the same wallet address entered in your sponsor details.');
-      }
-    } catch (caught: any) {
-      setError(caught?.message || 'Wallet connection was cancelled.');
+  async function cancelUnpaid(close=true) {
+    if(cancelling.current)return;
+    if(!reservation || tx || paymentUncertain.current || sending.current || !['PENDING','EXPIRED'].includes(status)) {
+      if(close)onOpenChange(false);
+      return;
     }
+    cancelling.current=true;setBusy(true);
+    try {
+      const response=await fetch('/api/checkout/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:reservation.id,secret:reservation.secret}),keepalive:true});
+      const result=await response.json() as {released?:boolean;error?:string};
+      if(!response.ok)throw new Error(result.error||'Could not release the reservation. Please retry.');
+      if(result.released) {
+        try{sessionStorage.removeItem(savedKey);}catch{}
+        setReservation(null);setVerification(null);setTx('');
+        onConfirmed();
+      }
+      if(close)onOpenChange(false);
+    }catch(caught:any){setError(caught?.message||'Could not release the reservation.');}
+    finally{cancelling.current=false;setBusy(false);}
+  }
+
+  useEffect(()=>{
+    if(!open || !reservation || tx || !['PENDING','EXPIRED'].includes(status))return;
+    const leave=()=>{
+      if(sending.current || paymentUncertain.current)return;
+      const body=JSON.stringify({id:reservation.id,secret:reservation.secret});
+      const sent=navigator.sendBeacon?.('/api/checkout/cancel',new Blob([body],{type:'application/json'}));
+      if(!sent)void fetch('/api/checkout/cancel',{method:'POST',headers:{'content-type':'application/json'},body,keepalive:true}).catch(()=>{});
+      // On return, the stale reservation will be checked server-side.
+    };
+    window.addEventListener('pagehide',leave);
+    const back=()=>{void cancelUnpaid();};
+    window.addEventListener('popstate',back);
+    return()=>{window.removeEventListener('pagehide',leave);window.removeEventListener('popstate',back);};
+  },[open,reservation,tx,status]);
+
+  function requireProvider() {
+    const legacy=(window as any).ethereum as WalletProvider|undefined;
+    const selected=provider.current || (walletOptions.length===1 ? walletOptions[0].provider : null) || (!mobileWalletUI() && legacy?.request ? legacy : null);
+    if(!selected)throw new Error('Tap Connect wallet to choose your wallet before continuing.');
+    provider.current=selected;
+    return selected;
+  }
+
+  async function connectSelected(option: WalletOption) {
+    setError('');setBusy(true);
+    try {
+      const accounts=await option.provider.request({method:'eth_requestAccounts'});
+      const account=String(accounts?.[0]||'');
+      if(!/^0x[0-9a-fA-F]{40}$/.test(account))throw new Error('Your wallet did not return a valid account.');
+      if(reservation && account.toLowerCase()!==reservation.wallet.toLowerCase())throw new Error('Connect the same wallet used to reserve this spot.');
+      provider.current=option.provider;
+      setWallet(account);setWalletName(option.name);setWalletPicker(false);
+    }catch(caught:any){setError(caught?.message||'Wallet connection was cancelled.');}
+    finally{setBusy(false);}
+  }
+
+  function connectWallet() {
+    setError('');
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    if(mobileWalletUI()){setWalletPicker(true);return;}
+    const legacy=(window as any).ethereum as WalletProvider|undefined;
+    const selected=provider.current || (legacy?.request ? legacy : walletOptions[0]?.provider);
+    if(!selected){setError('No browser wallet detected. Open your wallet extension, then try again.');return;}
+    const option=walletOptions.find(item=>item.provider===selected);
+    void connectSelected(option || {id:'browser',name:'Wallet',provider:selected});
   }
 
   async function reserve(event: React.FormEvent<HTMLFormElement>) {
@@ -205,8 +276,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       payload.set('slot', String(slot.id));
       payload.set('chainId',String(chainId));
       payload.set('token',selectedToken);
-      const ethereum=(window as any).ethereum;
-      if(!ethereum)throw new Error('Open this site in your wallet’s browser or use a browser wallet to sign your checkout.');
+      const ethereum=requireProvider();
       const accounts=await ethereum.request({method:'eth_requestAccounts'});
       if(String(accounts?.[0]||'').toLowerCase()!==String(payload.get('wallet')).toLowerCase())throw new Error('Connect the payment wallet entered in your details.');
       const challengeResponse=await fetch('/api/checkout/authorize',{method:'POST',body:payload});
@@ -246,6 +316,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       if (!response.ok) throw new Error(result.error || 'Payment verification is temporarily unavailable.');
       setVerification(result);
       if (result.transactionHash) { setTx(result.transactionHash);remember(reservation,result.transactionHash); }
+      if(result.status==='CANCELLED'){try{sessionStorage.removeItem(savedKey);}catch{}setReservation(null);setVerification(null);onConfirmed();}
       if (['CONFIRMED', 'LATE_CONFIRMED'].includes(result.status)) onConfirmed();
     } catch (caught: any) {
       setError(caught?.message || 'Payment verification is temporarily unavailable.');
@@ -256,7 +327,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   }
 
   useEffect(() => {
-    if (!reservation || confirmed || late || status === 'FAILED') return;
+    if (!reservation || confirmed || late || ['FAILED','CANCELLED'].includes(status)) return;
     const timer = window.setInterval(() => verifyPayment(tx), 12000);
     return () => window.clearInterval(timer);
     // The interval intentionally follows status changes returned by the verifier.
@@ -270,8 +341,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     setError('');
     try {
       if (reservation.reservedUntil-Date.now()<60000) throw new Error('Less than one minute remains. Do not send funds; start a new checkout when this reservation expires.');
-      const ethereum = (window as any).ethereum;
-      if (!ethereum) throw new Error('No browser wallet was detected. Use the manual payment details and paste the transaction hash.');
+      const ethereum = requireProvider();
       const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
       const account = String(accounts?.[0] || '');
       if (account.toLowerCase() !== reservation.wallet.toLowerCase()) throw new Error('Connect the same wallet address entered in your sponsor details.');
@@ -297,6 +367,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       if(intent.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS||intent.priceUnits!==reservation.priceUnits||intent.chainId!==reservation.chainId||intent.tokenAddress.toLowerCase()!==reservation.tokenAddress.toLowerCase())throw new Error('Payment details changed. Refresh the checkout before sending.');
       const units = BigInt(reservation.priceUnits);
       const data = `0xa9059cbb${reservation.treasury.slice(2).toLowerCase().padStart(64, '0')}${units.toString(16).padStart(64, '0')}`;
+      paymentUncertain.current=true;remember(reservation);
       const hash = await ethereum.request({
         method: 'eth_sendTransaction',
         params: [{ from: account, to: reservation.tokenAddress, data, value: '0x0' }],
@@ -306,7 +377,10 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       setVerification({ status: 'PAYMENT_DETECTED', transactionHash: String(hash) });
       await verifyPayment(String(hash));
     } catch (caught: any) {
-      setError(caught?.message || 'The wallet transaction was not sent.');
+      if(Number(caught?.code)===4001 || Number(caught?.cause?.code)===4001){
+        paymentUncertain.current=false;sending.current=false;
+        await cancelUnpaid();
+      }else{setError(caught?.message || 'The wallet transaction status is uncertain. Check your wallet before trying again.');}
     } finally {
       sending.current=false;
       setPaying(false);
@@ -326,8 +400,8 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const explorerUrl = verification?.explorerUrl || (reservation && tx ? `${reservation.explorer}${tx}` : '');
 
   return (
-    <Dialog open={open} onOpenChange={value=>{if(!paying&&!submitting.current)onOpenChange(value);}}>
-      <DialogContent className="checkout" style={viewportStyle} showCloseButton={false}>
+    <Dialog open={open} onOpenChange={value=>{if(!paying&&!submitting.current){if(value)onOpenChange(true);else void cancelUnpaid();}}}>
+      <DialogContent positioning="custom" className="checkout" style={viewportStyle} showCloseButton={false}>
         <div className="checkout-header">
         <div className="checkout-progress" aria-label="Checkout progress">
           <span className={!reservation ? 'active' : 'complete'}><b>01</b> DETAILS</span>
@@ -372,11 +446,10 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label>EMAIL *<input name="email" type="email" inputMode="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" autoCapitalize="none" spellCheck={false} enterKeyHint="next" /></label>
                   <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                 </div>
-                <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `CONNECTED ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
+                <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
                 <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
                 <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I agree to the <a href="/terms" target="_blank" rel="noopener noreferrer">Terms &amp; Conditions</a> and understand the sponsorship rules.</span></label>
-                <p className="field-note">Sign a message to prove ownership of your payment wallet, then reserve for up to 15 minutes. The signature does not transfer funds. You need the full USDC amount on your chosen network before reserving.</p>
                 <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? 'AUTHORIZE IN YOUR WALLET…' : 'SIGN & CONTINUE TO PAYMENT'}</button>
               </form>
             ) : (
@@ -394,31 +467,13 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <Wallet size={17} /> {wallet ? `${connected ? 'CONNECTED' : 'WRONG WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET'}
                 </button>
                 {wallet && <div className="wallet-state"><span>Connected wallet</span><code>{wallet}</code></div>}
-                <div className="wallet-state"><span>Paid directly to Manish</span><code>{reservation.treasury}</code></div>
                 <button className="button primary checkout-primary" type="button" onClick={payWithWallet} disabled={remaining<60 || busy || paying || Boolean(tx) || status==='FAILED'}>
                   {paying ? 'CONFIRM IN YOUR WALLET…' : tx ? 'PAYMENT SENT · VERIFYING' : `PAY $${reservation.price} ${reservation.token}`}
                 </button>
 
-                <details className="manual-payment">
-                  <summary>Prefer to send manually?</summary>
-                  <p>Send one exact transfer from the registered wallet before the timer ends. The holder changes only after the server confirms the payment.</p>
-                  <dl className="payment-details">
-                    <div><dt>NETWORK</dt><dd>{reservation.chainName}</dd></div>
-                    <div><dt>TOKEN</dt><dd>{reservation.tokenLabel || reservation.token}</dd></div>
-                    <div><dt>AMOUNT</dt><dd>${reservation.price} {reservation.token}</dd></div>
-                    <div className="wide"><dt>TREASURY ADDRESS</dt><dd><code>{reservation.treasury}</code><button type="button" onClick={() => copy(reservation.treasury, 'treasury')} aria-label="Copy treasury address">{copied === 'treasury' ? <Check size={16} /> : <Copy size={16} />} <span>{copied === 'treasury' ? 'COPIED' : 'COPY ADDRESS'}</span></button></dd></div>
-                    <div className="wide"><dt>TOKEN CONTRACT</dt><dd><code>{reservation.tokenAddress}</code><button type="button" onClick={() => copy(reservation.tokenAddress, 'token')} aria-label="Copy token contract">{copied === 'token' ? <Check size={16} /> : <Copy size={16} />}</button></dd></div>
-                  </dl>
-                </details>
-
-                <div className="verify-box">
-                  <label>TRANSACTION HASH<input value={tx} onChange={(event) => setTx(event.target.value)} placeholder="0x…" maxLength={66} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="done" /></label>
-                  <button className="button slot-button" type="button" onClick={() => verifyPayment()} disabled={!tx || busy}>{busy ? 'VERIFYING…' : 'VERIFY PAYMENT'}</button>
-                </div>
-
                 <div className={`payment-status ${['PAYMENT_DETECTED', 'CONFIRMING'].includes(visibleStatus) ? 'is-live' : ''}`} aria-live="polite">
                   <span className="status-dot" />
-                  <div><b>{statusLabel(visibleStatus)}</b><p>{visibleStatus === 'CONFIRMING' ? `${verification?.confirmations || 0} of ${verification?.required || 0} confirmations` : visibleStatus === 'EXPIRED' ? 'The claim reservation has been released. Close this window and reserve again before sending funds.' : verification?.message || 'Your payment is checked automatically. A transaction hash can also be provided if needed.'}</p></div>
+                  <div><b>{statusLabel(visibleStatus)}</b><p>{visibleStatus === 'CONFIRMING' ? `${verification?.confirmations || 0} of ${verification?.required || 0} confirmations` : visibleStatus === 'EXPIRED' ? 'The claim reservation has been released. Close this window and reserve again before sending funds.' : verification?.message || 'Your payment is checked automatically.'}</p></div>
                 </div>
                 <p className="payment-warning"><ShieldCheck size={16} /> Only send {reservation.tokenLabel || reservation.token} on {reservation.chainName} for this checkout. You will need {reservation.gas} on {reservation.chainName} for gas. Never share your seed phrase.</p>
                 {(!remaining||status==='FAILED')&&<button type="button" className="button slot-button" onClick={()=>{try{sessionStorage.removeItem(savedKey);}catch{}setReservation(null);setVerification(null);setTx('');onConfirmed();}}>START A NEW CHECKOUT</button>}
@@ -427,6 +482,20 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
             {error && <p className="error" role="alert">{error}</p>}
           </>
         )}
+        <Dialog open={walletPicker && open} onOpenChange={setWalletPicker}>
+          <DialogContent positioning="custom" className="wallet-picker-modal" style={viewportStyle} showCloseButton={false}>
+            <div className="wallet-picker-heading"><DialogTitle>Connect wallet</DialogTitle><DialogClose aria-label="Close wallet chooser"><X size={20}/></DialogClose></div>
+            <DialogDescription>Choose your wallet to continue.</DialogDescription>
+            <div className="wallet-options">
+              {walletOptions.map(option=><button type="button" key={option.id} disabled={busy||paying} onClick={()=>void connectSelected(option)}><Wallet size={20}/><span>{option.name}<small>Connect wallet</small></span><ExternalLink size={16}/></button>)}
+              {!reservation && walletLinks.filter(link=>!walletOptions.some(option=>option.name.toLowerCase().replace(/[^a-z]/g,'').includes(link.name.toLowerCase().replace(/[^a-z]/g,'')))).map(option=><a key={option.name} href={option.href}><Wallet size={20}/><span>{option.name}<small>Open mobile app</small></span><ExternalLink size={16}/></a>)}
+            </div>
+            {!reservation && <button className="wallet-copy-link" type="button" onClick={()=>void copy(walletCheckoutUrl(window.location.origin,slot!.id,chainId),'wallet-link')}>{copied==='wallet-link'?'LINK COPIED':'USE ANOTHER WALLET · COPY LINK'}</button>}
+            {!reservation && <p className="field-note">Mobile app options open this spot in your wallet’s browser.</p>}
+            {reservation && !walletOptions.length && <p className="field-note">Return to the wallet browser used for this reservation.</p>}
+            {error && <p className="error" role="alert">{error}</p>}
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );

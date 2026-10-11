@@ -1,0 +1,5 @@
+// Staging-only negative authorization tests; the auth-check route does not mutate data.
+if(process.env.STAGING_ONLY_ACK!=='yes'||!process.env.STAGING_URL){console.error('Staging URL and STAGING_ONLY_ACK=yes required; no requests sent.');process.exit(2);}
+const targets=[process.env.STAGING_URL,process.env.STAGING_DIRECT_WORKER_URL].filter(Boolean);
+for(const target of targets){const url=new URL(target);if(url.hostname==='eight-projects-devcon-shirt.cryptovlogger1.chatgpt.site')throw Error('Production target prohibited.');for(const headers of [{},{'oai-authenticated-user-id':process.env.ADMIN_USER_ID||'spoof','oai-authenticated-user-email':process.env.ADMIN_EMAIL||'spoof@example.test'}]){const r=await fetch(new URL('/api/admin/auth-check',url),{headers,redirect:'manual'});const d=await r.json().catch(()=>null);if(d?.authorized===true)throw Error('Unauthenticated/spoofed identity gained admin access');console.log(JSON.stringify({target:url.hostname,spoofed:Object.keys(headers).length>0,denied:true,status:r.status}));}}
+if(!process.env.STAGING_DIRECT_WORKER_URL)console.log('Direct Worker route was not inspected; must verify disabled/restricted in Cloudflare.');

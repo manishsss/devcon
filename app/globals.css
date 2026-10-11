@@ -201,8 +201,8 @@ footer{display:flex;gap:35px;align-items:center;padding-top:48px;padding-bottom:
 .ledger-table{margin-top:20px!important}.refund-workflow{display:grid;grid-template-columns:1.1fr .8fr 1.2fr 1.2fr auto;gap:10px;align-items:end;border-top:1px solid #ddd6c9;padding:15px 0}.refund-workflow p{margin:5px 0 0;font-size:12px}.refund-workflow input,.refund-workflow select{margin-bottom:0}.refund-workflow .button{min-height:42px}.queue-error{display:block;max-width:250px;margin-top:5px;color:rgba(23,21,29,.58);font-size:10px;line-height:1.35}.compact-button{min-height:32px;padding:6px 10px;font-size:9px}
 
 /* One-time scroll reveals and restrained hover feedback. */
-.scroll-reveal{opacity:0;transform:translateY(22px)}.scroll-reveal.is-visible{opacity:1;transform:none;animation:scroll-reveal-in 240ms cubic-bezier(.2,.7,.2,1) var(--reveal-delay,0ms) backwards}
-@keyframes scroll-reveal-in{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:translateY(0)}}
+.scroll-reveal{opacity:0;transform:translateY(var(--reveal-distance,22px))}.scroll-reveal.is-visible{opacity:1;transform:none;animation:scroll-reveal-in 240ms cubic-bezier(.2,.7,.2,1) var(--reveal-delay,0ms) backwards}
+@keyframes scroll-reveal-in{from{opacity:0;transform:translateY(var(--reveal-distance,22px))}to{opacity:1;transform:translateY(0)}}
 @media(hover:hover) and (pointer:fine){.spot-card:hover,.spot-card.scroll-reveal.is-visible:hover,.spot-card:focus-within,.sponsors article:hover,.sponsors article.scroll-reveal.is-visible:hover{border-color:var(--brand-accent);background:#fffdf9;transform:translateY(-3px)}.spot-card:hover .slot-button,.spot-card:focus-within .slot-button{background:#17151d;color:#f7f3ea}.deliverable:hover{background:rgba(var(--brand-rgb),.025)}.faq-trigger:hover{background:rgba(var(--brand-rgb),.045)}}
 
 @media(min-width:1100px){.shirt-stage{max-width:525px}.hero-copy{padding-top:12px}}
@@ -255,6 +255,12 @@ footer{display:flex;gap:35px;align-items:center;padding-top:48px;padding-bottom:
 .onboard{padding-top:48px}.lineup-placeholder{height:65px;display:flex;align-items:center;font-family:"Geist Mono Custom",monospace;font-size:30px;color:#625d56}.sponsors h3{font-size:16px;margin:14px 0 6px}.sponsors .lineup-open{background:transparent}.lineup-open h3{font-weight:500;color:#625d56}
 
 footer a:hover,footer a:focus-visible{text-decoration:underline;text-decoration-color:var(--brand-accent);text-decoration-thickness:2px;text-underline-offset:6px}
+footer>.footer-right{display:flex;flex-direction:column;align-items:flex-end;gap:20px;margin-right:0}
+footer .footer-social-pill{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 14px;border:1px solid #17151d;border-radius:999px;background:#17151d;color:#f7f3ea;font-size:12px;font-weight:700;letter-spacing:.01em;white-space:nowrap;text-decoration:none;transition:background-color 180ms ease-out,border-color 180ms ease-out}
+.footer-social-pill svg{width:15px;height:15px;flex-shrink:0}
+footer .footer-social-pill:hover,footer .footer-social-pill:focus-visible{background:var(--brand-accent);border-color:var(--brand-accent);color:#f7f3ea;text-decoration:none}
+footer .footer-social-pill:focus-visible{outline:2px solid var(--brand-accent);outline-offset:4px}
+@media(max-width:600px){footer>.footer-right{width:100%;gap:18px}.footer-right .footer-legal{flex-wrap:wrap;justify-content:flex-end;gap:16px}}
 
 .navlinks .nav-cta,.navlinks .nav-cta:hover,.navlinks .nav-cta:focus-visible{color:var(--on-brand);background:var(--brand-accent);text-decoration:none}
 
@@ -315,3 +321,37 @@ footer{padding-top:43px;padding-bottom:37px}
 /* Bring the spot selection closer to the funding progress. */
 #spots{padding-top:38px}
 @media(max-width:600px){#spots{padding-top:28px}}
+
+/* Fixed print areas: logo aspect ratio must never resize the slot grid. */
+.shirt-slots{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
+.print-slot{min-width:0;min-height:0;overflow:hidden;position:relative;text-decoration:none}
+.print-slot img{position:absolute;inset:0;width:100%;height:100%;max-height:100%;padding:5px;object-fit:contain;display:block}
+.sponsors article>a{display:block;width:100%}
+
+
+/* Editorial motion: extend the existing one-time reveal system, with no new engine. */
+.why-section .scroll-reveal, .about-section .scroll-reveal { --reveal-distance: 12px; }
+.why-section .about-intro, .about-section .about-intro { transition: border-color 180ms ease-out; }
+.about-video .video-preview img { transition: transform 240ms cubic-bezier(.2,.7,.2,1); }
+.about-video .video-play { transition: background-color 180ms ease-out, color 180ms ease-out, transform 180ms cubic-bezier(.2,.7,.2,1); }
+.about-post { transition: transform 180ms cubic-bezier(.2,.7,.2,1), border-color 180ms ease-out, background-color 180ms ease-out; }
+.about-post h3 { transition: color 180ms ease-out; }
+.about-post .video-link, .about-video .video-link { position: relative; padding-bottom: 3px; }
+.about-post .video-link::after, .about-video .video-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: currentColor; transform: scaleX(0); transform-origin: left; transition: transform 180ms cubic-bezier(.2,.7,.2,1); }
+.about-post .video-link svg, .about-video .video-link svg { transition: transform 180ms cubic-bezier(.2,.7,.2,1); }
+.about-video:focus-visible { outline: 2px solid var(--brand-accent); outline-offset: 5px; border-radius: 8px; }
+.about-post:focus-visible h3 { color: var(--brand-accent); }
+.about-post:focus-visible .video-link::after, .about-video:focus-visible .video-link::after { transform: scaleX(1); }
+@media (hover: hover) and (pointer: fine) {
+  .why-section:hover .about-intro, .about-section:hover .about-intro { border-top-color: var(--brand-accent); }
+  .about-post:hover, .about-post.scroll-reveal.is-visible:hover { transform: translateY(-2px); border-color: var(--brand-accent); background: #FFFDF9; }
+  .about-post:hover h3 { color: var(--brand-accent); }
+  .about-video:hover .video-preview img { transform: scale(1.025); }
+  .about-video:hover .video-play { transform: translate(-50%,-50%) scale(1.04); }
+  .about-post:hover .video-link::after, .about-video:hover .video-link::after { transform: scaleX(1); }
+  .about-post:hover .video-link svg, .about-video:hover .video-link svg { transform: translate(2px,-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .about-post:hover, .about-post.scroll-reveal.is-visible:hover, .about-video:hover .video-preview img, .about-post .video-link svg, .about-video .video-link svg { transform: none !important; }
+  .about-video:hover .video-play { transform: translate(-50%,-50%) !important; }
+}

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b678ceb7-1106-4972-af4f-64832a7b3940",
+  "id": "c42bad8b-8e34-41e0-992f-cc88384ce990",
   "prevId": "e7f2e7fb-8c4c-4826-aad4-1e9965a0dafd",
   "tables": {
     "auction_campaign": {
@@ -90,66 +90,6 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "checkout_authorizations": {
-      "name": "checkout_authorizations",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "wallet_address": {
-          "name": "wallet_address",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "intent_hash": {
-          "name": "intent_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "message": {
-          "name": "message",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "consumed_by": {
-          "name": "consumed_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_checkout_authorizations_expiry": {
-          "name": "idx_checkout_authorizations_expiry",
-          "columns": [
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -551,6 +491,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "verification_lock": {
+          "name": "verification_lock",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "refund_eligible_at": {
+          "name": "refund_eligible_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "refund_note": {
           "name": "refund_note",
           "type": "text",
@@ -610,6 +564,17 @@
           ],
           "isUnique": false
         },
+        "payments_unresolved_intent_unique": {
+          "name": "payments_unresolved_intent_unique",
+          "columns": [
+            "lower(\"wallet_address\")",
+            "chain_id",
+            "lower(\"token_contract\")",
+            "amount_units"
+          ],
+          "isUnique": true,
+          "where": "\"payments\".\"status\" NOT IN ('CONFIRMED','LATE_CONFIRMED','FAILED')"
+        },
         "payments_transaction_hash_unique": {
           "name": "payments_transaction_hash_unique",
           "columns": [
@@ -625,6 +590,66 @@
           "isUnique": true
         }
       },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "reservation_challenges": {
+      "name": "reservation_challenges",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "wallet": {
+          "name": "wallet",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "digest": {
+          "name": "digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "amount_units": {
+          "name": "amount_units",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires": {
+          "name": "expires",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "used": {
+          "name": "used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -970,6 +995,17 @@
     "columns": {}
   },
   "internal": {
-    "indexes": {}
+    "indexes": {
+      "payments_unresolved_intent_unique": {
+        "columns": {
+          "lower(\"wallet_address\")": {
+            "isExpression": true
+          },
+          "lower(\"token_contract\")": {
+            "isExpression": true
+          }
+        }
+      }
+    }
   }
 }

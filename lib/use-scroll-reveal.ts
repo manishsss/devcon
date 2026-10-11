@@ -6,7 +6,7 @@ export function useScrollReveal() {
     if (!('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     const root = document.querySelector('main');
     if (!root) return;
-    const selector = '.hero-copy, .shirt-stage, .fund, .section-heading, .editorial-heading, .spot-card, .deliverable, .faq-list, .empty-lineup, .sponsors article, .transparency';
+    const selector = '.hero-copy, .shirt-stage, .fund, .section-heading, .editorial-heading, .spot-card, .deliverable, .faq-list, .empty-lineup, .sponsors article, .transparency, .why-section .about-intro > div:first-child, .about-section .about-intro > div:first-child, .why-section .about-copy > p, .about-section .about-copy > p, .about-videos > a, .about-posts-heading, .about-posts > a';
     const elements = new Set<HTMLElement>();
     const reveal = (element: HTMLElement) => {
       element.classList.add('is-visible');
@@ -23,6 +23,11 @@ export function useScrollReveal() {
         const columns = element.matches('.deliverable') ? (mobile ? 1 : 2) : (mobile ? 2 : 4);
         const index = Array.from(element.parentElement?.children ?? []).indexOf(element);
         element.style.setProperty('--reveal-delay', `${(index % columns) * 65}ms`);
+      }
+      if (element.matches('.about-video, .about-post, .about-copy > p')) {
+        const index = Array.from(element.parentElement?.children ?? []).indexOf(element);
+        const columns = window.matchMedia('(max-width: 600px)').matches ? 1 : 2;
+        element.style.setProperty('--reveal-delay', `${(index % columns) * 60}ms`);
       }
       element.classList.add('scroll-reveal');
       observer.observe(element);
