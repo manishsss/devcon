@@ -3,7 +3,7 @@ import { config, db, dispatchNotification, queueNotification, ready, rpc, settle
 import { PAYMENT_CONFIRMED_EMAIL, outbidEmail, paymentConfirmedEmail } from './sponsor-email';
 import { formatUsdcUnits } from './auction';
 import { paymentRail, TREASURY_WALLET_ADDRESS } from './payment-networks';
-import { exactUsdcAmount, qrPaymentUri } from './qr-payment';
+import { exactUsdcAmount, qrPriceAdjustment, qrPaymentUri } from './qr-payment';
 import { runPaymentMonitor } from './payment-monitor';
 
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -318,7 +318,7 @@ export async function qrPaymentDetails(body:any){
     id:row.id,secret:row.secret,reservedUntil:row.reserved_until,paymentMode:'qr',qrPayable:payable,
     price:exactUsdcAmount(row.amount_units),priceUnits:row.amount_units,
     claimPrice:displayUnits(row.claim_price_units),claimPriceUnits:row.claim_price_units,
-    identifyingFraction:exactUsdcAmount(BigInt(row.amount_units)-BigInt(row.claim_price_units)),
+    priceAdjustment:qrPriceAdjustment(row.claim_price_units,row.amount_units),
     position:row.position,project:row.project_name,wallet:row.wallet_address,treasury:verification.treasury,
     chainId:network.id,chainName:network.name,token:asset.symbol,tokenLabel:asset.label,tokenAddress:asset.address,
     decimals:asset.decimals,gas:network.gas,explorer:network.explorer,

@@ -57,7 +57,7 @@ export default function TermsPage() {
         <section>
           <h2>Payment</h2>
           <p>Payments are accepted in cryptocurrency only, using the token and blockchain network specified at checkout.</p>
-          <p>Where QR checkout is offered, its exact payment includes an identifying fraction of less than 0.01 USDC above the sponsorship price. Send the full displayed amount without rounding, from the wallet address you entered. The fraction does not increase the auction price or fundraising total and is included in any eligible full refund. QR requests must not be reused; late payments do not claim a Spot and require manual refund processing.</p>
+          <p>Where QR checkout is offered, new requests use an exact amount below the listed sponsorship price by less than 1 USDC, with at most three decimal places. Send the full displayed amount without rounding, from the wallet address you entered. Takeover prices use the listed sponsorship price; campaign progress counts the amount actually paid up to that price. Eligible full refunds return the full amount received. Previously issued requests keep their original exact amounts. QR requests must not be reused; late payments do not claim a Spot and require manual refund processing.</p>
           <p>The payment must be successfully verified on-chain before a sponsorship or takeover is confirmed. Sending funds on an unsupported network, sending the wrong token or amount, or providing an invalid transaction hash may delay or prevent confirmation.</p>
           <p>You are responsible for checking the payment amount, network and destination before submitting a transaction. Blockchain transactions may be irreversible, and network fees may not be recoverable.</p>
         </section>

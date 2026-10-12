@@ -26,7 +26,7 @@ type Reservation = {
   paymentUri?: string;
   qrPayable?: boolean;
   claimPrice?: string;
-  identifyingFraction?: string;
+  priceAdjustment?: string;
   id: string;
   secret: string;
   reservedUntil: number;
@@ -478,7 +478,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label><input type="radio" name="paymentMode" value="wallet" checked={paymentMode==='wallet'} onChange={()=>setPaymentMode('wallet')} /> CONNECT & SIGN</label>
                   <label><input type="radio" name="paymentMode" value="qr" checked={paymentMode==='qr'} onChange={()=>setPaymentMode('qr')} /> QR · NO CONNECTION OR SIGNATURE</label>
                 </fieldset>}
-                {paymentMode==='qr' && <p className="field-note">A tiny identifying fraction below 0.01 USDC is added to your payment. Send the full amount from the wallet address you enter. It is included in eligible refunds and excluded from auction pricing. QR requests remain reserved until expiry, even if closed.</p>}
+                {paymentMode==='qr' && <p className="field-note">Your QR amount is discounted by less than 1 USDC and uses at most three decimal places. Your wallet must hold the listed price to reserve. Send the exact displayed amount from the wallet address you enter. Eligible refunds return the amount paid; takeover prices use the listed price. QR requests remain reserved until expiry, even if closed.</p>}
                 <div className="form-grid">
                   <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{PAYMENT_NETWORKS.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>PAYMENT TOKEN<select value={selectedToken} onChange={event=>setSelectedToken(event.target.value)}>{network.tokens.map(item=><option key={item.symbol} value={item.symbol}>{item.label}</option>)}</select></label>
@@ -508,7 +508,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                 </div>
 
                 {reservation.paymentMode==='qr' ? <>
-                  <QrPaymentRequest uri={reservation.paymentUri!} amount={reservation.price} network={reservation.chainName} treasury={reservation.treasury} wallet={reservation.wallet} claimPrice={reservation.claimPrice!} fraction={reservation.identifyingFraction!} active={reservation.qrPayable!==false&&remaining>=60&&!tx&&status==='PENDING'} copy={(value,label)=>void copy(value,label)} />
+                  <QrPaymentRequest uri={reservation.paymentUri!} amount={reservation.price} network={reservation.chainName} treasury={reservation.treasury} wallet={reservation.wallet} claimPrice={reservation.claimPrice!} adjustment={reservation.priceAdjustment!} active={reservation.qrPayable!==false&&remaining>=60&&!tx&&status==='PENDING'} copy={(value,label)=>void copy(value,label)} />
                   {copied && <p role="status">{copied==='amount'?'Exact amount':'Receiver'} copied.</p>}
                   <label className="qr-hash-field">TRANSACTION HASH · OPTIONAL<input value={tx} onChange={event=>setTx(event.target.value)} placeholder="0x…" autoCapitalize="none" spellCheck={false} /></label>
                   <button type="button" className="button secondary" disabled={busy} onClick={()=>void verifyPayment(tx)}>CHECK PAYMENT</button>

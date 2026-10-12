@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import QRCode from 'qrcode';
 import { env } from './runtime.mjs';
 import { database } from './database.mjs';
-import { initialize, inventory } from '../lib/campaign';
+import { initialize, inventory, settleCampaign } from '../lib/campaign';
 import { POST } from '../app/api/[...path]/route';
 import { cancelCheckout } from '../lib/checkout-cancellation';
 import { monitorPayments, qrPaymentDetails, verifyPayment, verifyRefund } from '../lib/payment';
-import { allocateQrAmount, exactUsdcAmount, qrPaymentUri } from '../lib/qr-payment';
+import { allocateQrAmount, exactUsdcAmount, qrPriceAdjustment, qrPaymentUri } from '../lib/qr-payment';
 import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '../lib/payment-networks';
 
 const wallet='0x'+'1'.repeat(40),other='0x'+'2'.repeat(40);
@@ -53,10 +53,12 @@ test('QR request encodes contract, chain, treasury and integer units with no rou
   assert.equal(exactUsdcAmount('350000137'),'350.000137');
   assert.match(await QRCode.toDataURL(uri),/^data:image\/png;base64,iVBOR/);
 });
-test('QR checkout needs no signature, preserves nominal price and charges less than one cent extra',async()=>{
+test('QR checkout needs no signature, preserves nominal price and discounts by less than one USDC with at most three decimals',async()=>{
   const r=await reserve();assert.equal(r.status,200);
   assert.equal(r.value.paymentMode,'qr');assert.equal(r.value.claimPriceUnits,'350000000');
-  const extra=BigInt(r.value.priceUnits)-BigInt(r.value.claimPriceUnits);assert.ok(extra>0&&extra<10000);
+  const discount=BigInt(r.value.claimPriceUnits)-BigInt(r.value.priceUnits);assert.ok(discount>0&&discount<BigInt(1000000));
+  assert.equal(BigInt(r.value.priceUnits)%BigInt(1000),BigInt(0));assert.match(r.value.price,/^349\.\d{1,3}$/);
+  assert.equal(r.value.priceAdjustment,qrPriceAdjustment(r.value.claimPriceUnits,r.value.priceUnits));
   assert.equal(r.value.price,exactUsdcAmount(r.value.priceUnits));assert.ok(r.value.paymentUri.includes('uint256='+r.value.priceUnits));
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM checkout_authorizations').get()!.n,0);
 });
@@ -68,7 +70,7 @@ test('QR checkout fails closed when disabled, cross-origin, closed or underfunde
   assert.equal((await reserve('1','192.0.2.2',wallet,null)).status,403);
   assert.equal((await reserve('1','192.0.2.2',wallet,'https://evil.test')).status,403);
   const insecure=await POST(new Request('http://site.test/api/checkout/qr',{method:'POST',headers:{origin:'http://site.test'},body:form()}),{params:Promise.resolve({path:['checkout','qr']})});assert.equal(insecure.status,403);
-  balance=BigInt(350000000);assert.equal((await reserve()).status,400);
+  balance=BigInt(349000000);assert.equal((await reserve()).status,400);
   db.sqlite.prepare("UPDATE auction_campaign SET status='UPCOMING' WHERE id=1").run();assert.equal((await reserve('1','192.0.2.3')).status,409);
 });
 test('client lease and atomic slot reservation prevent parallel QR hoarding',async()=>{
@@ -80,15 +82,15 @@ test('amount allocation skips collisions and never reuses a cancelled or expired
   const input={id:'first',chainId:8453,tokenAddress:token,treasury,baseUnits:BigInt(350000000),clientKey:'first',reservedUntil:100};
   const a=await allocateQrAmount(db,input,0,136);
   const b=await allocateQrAmount(db,{...input,id:'second',clientKey:'second'},1000,136);
-  assert.equal(a,BigInt(350000137));assert.equal(b,BigInt(350000138));
+  assert.equal(a,BigInt(349863000));assert.equal(b,BigInt(349862000));
   assert.throws(()=>db.sqlite.prepare('DELETE FROM qr_payment_amounts').run());
   assert.throws(()=>db.sqlite.prepare("UPDATE qr_payment_amounts SET amount_units='1'").run());
 });
-test('automatic discovery confirms exact payment once and excludes fraction from raised funds',async()=>{
+test('automatic discovery confirms exact discounted payment once and counts only funds received',async()=>{
   const r=await reserve();transfer(r.value.priceUnits);
   const counts=await monitorPayments();assert.equal(counts.succeeded,1);
   assert.equal(db.sqlite.prepare('SELECT status FROM payments').get()!.status,'CONFIRMED');
-  assert.equal((await inventory()).raisedUnits,'350000000');
+  assert.equal((await inventory()).raisedUnits,r.value.priceUnits);
   assert.equal((await verifyPayment({id:r.value.id,secret:r.value.secret})).price,r.value.price);
   assert.equal(db.sqlite.prepare('SELECT claim_count FROM slots WHERE id=1').get()!.claim_count,1);
 });
@@ -111,7 +113,7 @@ test('old expired QR payments remain monitored beyond one hour',async()=>{
   db.sqlite.prepare("UPDATE payments SET status='EXPIRED'").run();transfer(r.value.priceUnits);
   assert.equal((await monitorPayments()).succeeded,1);assert.equal(db.sqlite.prepare('SELECT status FROM payments').get()!.status,'LATE_CONFIRMED');
 });
-test('eligible refund verifies the entire QR amount including its fraction',async()=>{
+test('eligible refund verifies the entire discounted QR amount',async()=>{
   const r=await reserve();transfer(r.value.priceUnits);await verifyPayment({id:r.value.id,secret:r.value.secret,tx:hash});
   const payment:any=db.sqlite.prepare('SELECT * FROM payments').get();payment.refund_amount_units=r.value.priceUnits;
   receipt.logs[0].topics=[transferTopic,topic(treasury),topic(wallet)];await verifyRefund(payment,hash);
@@ -124,7 +126,7 @@ test('takeover prices use nominal amount while the full previous QR amount is re
   const newHash='0x'+'c'.repeat(64);transfer(next.value.priceUnits,other,newHash);await verifyPayment({id:next.value.id,secret:next.value.secret,tx:newHash});
   const previous=db.sqlite.prepare('SELECT refund_amount_units,refund_status FROM payments WHERE sponsorship_id=?').get(first.value.id)!;
   assert.equal(previous.refund_amount_units,first.value.priceUnits);assert.equal(previous.refund_status,'REFUND_PENDING');
-  assert.equal((await inventory()).raisedUnits,'525000000');
+  assert.equal((await inventory()).raisedUnits,next.value.priceUnits);
 });
 
 test('a different invoice cannot insert a payment using another QR amount',async()=>{
@@ -134,9 +136,9 @@ test('a different invoice cannot insert a payment using another QR amount',async
     SELECT 'collision',sponsor_id,sponsorship_id,slot_id,wallet_address,token,token_contract,chain,chain_id,amount,amount_usd,?,verification_config,created_at FROM payments WHERE sponsorship_id=?`).run(first.value.priceUnits,second.value.id),/another QR checkout/);
 });
 
-test('limited balance can pay a one-micro-unit fraction without burning an underfunded lease',async()=>{
-  balance=BigInt(350000000);assert.equal((await reserve()).status,400);assert.equal(db.sqlite.prepare('SELECT count(*) n FROM qr_payment_amounts').get()!.n,0);
-  balance=BigInt(350000001);const r=await reserve();assert.equal(r.status,200);assert.equal(r.value.price,'350.000001');
+test('listed-price balance can pay discounted QR without extra funds; underfunded attempts do not burn a lease',async()=>{
+  balance=BigInt(349000000);assert.equal((await reserve()).status,400);assert.equal(db.sqlite.prepare('SELECT count(*) n FROM qr_payment_amounts').get()!.n,0);
+  balance=BigInt(350000000);const r=await reserve();assert.equal(r.status,200);assert.ok(BigInt(r.value.priceUnits)<balance);
 });
 
 test('QR rate limits, unknown secrets and maintenance credentials fail closed',async()=>{
@@ -152,4 +154,30 @@ test('restored QR details come from server records and stop being payable after 
   assert.equal(details.paymentUri,r.value.paymentUri);assert.equal(details.wallet,wallet);
   await assert.rejects(()=>qrPaymentDetails({id:r.value.id,secret:'wrong'}),/unavailable/);
   await cancelCheckout({id:r.value.id,secret:r.value.secret});assert.equal((await qrPaymentDetails({id:r.value.id,secret:r.value.secret})).qrPayable,false);
+});
+
+test('three-decimal allocation supports the requested example and fractional takeover prices without rounding old requests',async()=>{
+  const input={id:'example',chainId:8453,tokenAddress:token,treasury,baseUnits:BigInt(350000000),clientKey:'example',reservedUntil:100};
+  assert.equal(exactUsdcAmount(await allocateQrAmount(db,input,0,67)),'349.932');
+  const fractional=await allocateQrAmount(db,{...input,id:'fractional',clientKey:'fractional',baseUnits:BigInt(350000137)},0,0);
+  assert.equal(exactUsdcAmount(fractional),'350');
+  assert.equal(qrPriceAdjustment('350000137',fractional),'-0.000137');
+  assert.equal(exactUsdcAmount('350000137'),'350.000137');
+  assert.equal(qrPriceAdjustment('350000000','350000137'),'+0.000137');
+  await assert.rejects(()=>allocateQrAmount(db,{...input,baseUnits:BigInt(0)},0,0),/at least 1 USDC/);
+});
+
+test('exhausted three-decimal pool fails closed without changing precision or reusing history',async()=>{
+  const insert=db.sqlite.prepare('INSERT INTO qr_payment_amounts(id,chain_id,token_contract,treasury,amount_units,base_units,client_key,reserved_until,created_at) VALUES(?,8453,?,?,?,\'350000000\',?,0,0)');
+  for(let tag=1;tag<=999;tag++)insert.run('old-'+tag,token.toLowerCase(),treasury.toLowerCase(),String(350000000-tag*1000),'old-'+tag);
+  await assert.rejects(()=>allocateQrAmount(db,{id:'new',chainId:8453,tokenAddress:token,treasury,baseUnits:BigInt(350000000),clientKey:'new',reservedUntil:2000},1000,0),(error:any)=>error.status===503);
+  assert.equal(db.sqlite.prepare('SELECT count(*) n FROM qr_payment_amounts').get()!.n,999);
+});
+
+test('campaign settlement does not clear a funding threshold using the unpaid QR discount',async()=>{
+  const r=await reserve();transfer(r.value.priceUnits);await verifyPayment({id:r.value.id,secret:r.value.secret,tx:hash});
+  db.sqlite.prepare("UPDATE auction_campaign SET status='CLOSED',threshold_units='350000000'").run();
+  const result=await settleCampaign();
+  assert.equal(result.status,'REFUNDED');assert.equal(result.final_value_units,r.value.priceUnits);
+  assert.equal(db.sqlite.prepare('SELECT refund_amount_units FROM payments').get()!.refund_amount_units,r.value.priceUnits);
 });

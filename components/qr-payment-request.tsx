@@ -5,7 +5,7 @@ import QRCode from 'qrcode';
 
 type Props = {
   uri: string; amount: string; network: string; treasury: string; wallet: string;
-  claimPrice: string; fraction: string; active: boolean;
+  claimPrice: string; adjustment: string; active: boolean;
   copy: (value: string, label: string) => void;
 };
 
@@ -32,7 +32,7 @@ export default function QrPaymentRequest(props: Props) {
         <dt>RECEIVER</dt><dd><code>{props.treasury}</code></dd>
         <dt>SEND FROM YOUR ENTERED WALLET</dt><dd><code>{props.wallet}</code></dd>
       </dl>
-      <p>Sponsorship: {props.claimPrice} USDC + identifying fraction: {props.fraction} USDC. The fraction is excluded from auction prices and fundraising totals, and included in an eligible full refund.</p>
+      <p>Listed sponsorship: {props.claimPrice} USDC. QR adjustment: {props.adjustment} USDC. Takeover prices use the listed price. Campaign progress counts the amount paid up to the listed price; eligible full refunds return exactly what you paid.</p>
       {props.active && <div className="checkout-actions">
         <button className="button secondary" type="button" onClick={() => props.copy(props.amount, 'amount')}>COPY EXACT AMOUNT</button>
         <button className="button secondary" type="button" onClick={() => props.copy(props.treasury, 'receiver')}>COPY RECEIVER</button>

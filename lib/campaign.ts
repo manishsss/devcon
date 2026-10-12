@@ -160,8 +160,10 @@ export async function settleCampaign(now=Date.now()){
   }
   if(current?.status==='CLOSED'&&!current.finalized_at){
     const totals:any=await db().prepare(`SELECT COUNT(*) AS holder_count,
-      COALESCE(SUM(CAST(current_price_units AS INTEGER)),0) AS total_units
-      FROM slots WHERE holder_sponsorship_id IS NOT NULL`).first();
+      COALESCE(SUM(MIN(CAST(sl.current_price_units AS INTEGER),
+        COALESCE(CAST(hp.amount_units AS INTEGER),CAST(sl.current_price_units AS INTEGER)))),0) AS total_units
+      FROM slots sl LEFT JOIN payments hp ON hp.sponsorship_id=sl.holder_sponsorship_id
+      WHERE sl.holder_sponsorship_id IS NOT NULL`).first();
     const totalUnits=BigInt(String(totals?.total_units||0));
     const successful=totalUnits>=BigInt(current.threshold_units);
     const finalStatus=successful?'SUCCESSFUL':'REFUNDED';
@@ -195,7 +197,7 @@ export async function inventory(){
   const {results}=await db().prepare(`SELECT
     sl.id,sl.price,sl.disabled,sl.order_id,sl.expires,sl.current_price_units,sl.holder_sponsorship_id,sl.claim_count,
     hs.status AS holder_status,s.project_name,s.logo_url,s.logo_status,s.x_handle,s.website,
-    hp.status AS holder_payment_status,hp.refund_status
+    hp.status AS holder_payment_status,hp.refund_status,hp.amount_units AS holder_amount_units
     FROM slots sl
     LEFT JOIN sponsorships hs ON hs.id=sl.holder_sponsorship_id
     LEFT JOIN sponsors s ON s.id=hs.sponsor_id
@@ -242,7 +244,13 @@ export async function inventory(){
       refundStatus:held?row.refund_status:null,
     };
   });
-  const raisedUnits=slots.reduce((total:bigint,slot:any)=>total+BigInt(slot.currentPriceUnits||0),BigInt(0));
+  // Discounted QR claims cannot count funds that were never received. Legacy
+  // extra-fraction QR claims still count only their nominal sponsorship price.
+  const raisedUnits=results.reduce((total:bigint,row:any)=>{
+    const nominal=BigInt(row.current_price_units||0);
+    const paid=BigInt(row.holder_amount_units??nominal);
+    return total+(paid<nominal?paid:nominal);
+  },BigInt(0));
   const count=slots.filter((slot:any)=>slot.holder).length;
   const targetUnits=BigInt(campaignRow.target_units);
   const thresholdUnits=BigInt(campaignRow.threshold_units);
