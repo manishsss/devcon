@@ -187,7 +187,6 @@ export default function Home() {
       <section className="hero wrap centered-portrait-hero">
         <div className="model-headline"><h1>My body is your billboard</h1><p>8 exclusive brand spots at Devcon Mumbai</p></div>
         <div className="shirt-stage" data-preview-side={previewSide}>
-          <span className="shirt-limited mono">LIMITED / 08</span>
           <div className="mobile-preview-controls">
             <div className="preview-side-switch" role="group" aria-label="T-shirt side">
               <button type="button" aria-pressed={previewSide==='front'} aria-controls="shirt-front" onClick={()=>setPreviewSide('front')}>FRONT <span>01–04</span></button>
@@ -201,8 +200,8 @@ export default function Home() {
             <img src={side === 'front' ? '/manish-front-cutout.png' : '/manish-back-cutout.png'} width="1024" height="1536" decoding="async" fetchPriority={side==='front'?'high':'low'} alt={`Manish wearing the sponsorship T-shirt, ${side} placement preview`} />
             <div className="shirt-slots">
               {data.slots.filter(slot => side === 'front' ? slot.id <= 4 : slot.id > 4).map(slot => (
-                <a key={slot.id} className={`print-slot ${slot.holder ? 'held' : ''}`} href={slot.holder ? (projectLink(slot) || undefined) : '#spots'} target={slot.holder ? '_blank' : undefined} rel={slot.holder ? 'noopener noreferrer' : undefined} aria-label={slot.holder ? `Visit ${slot.project}` : `View sponsorship spots, slot ${slot.id}`}>
-                  {slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <span>SLOT {String(slot.id).padStart(2, '0')}</span>}
+                <a key={slot.id} className={`print-slot ${slot.holder ? 'held' : ''} ${slot.holder && slot.logo ? 'has-logo' : ''}`} href={slot.holder ? (projectLink(slot) || undefined) : '#spots'} target={slot.holder ? '_blank' : undefined} rel={slot.holder ? 'noopener noreferrer' : undefined} aria-label={slot.holder ? `Visit ${slot.project}` : `View sponsorship spots, slot ${slot.id}`}>
+                  {slot.logo ? <img src={slot.logo} alt={slot.project || 'Current sponsor logo'} /> : <><span>{String(slot.id).padStart(2, '0')}</span><b>${slot.claimPrice}</b></>}
                 </a>
               ))}
             </div>
@@ -265,15 +264,7 @@ export default function Home() {
         <p className="muted small deliverables-note">The four deliverables above are the complete sponsorship package for every final holder.</p>
       </section>
 
-      <section className="section wrap faq-section" id="faq">
-        <div className="editorial-heading faq-heading"><span className="mono">FAQ</span><h2>Questions, answered.</h2></div>
-        <Accordion type="single" collapsible className="faq-list">
-          <AccordionItem value="deliverables" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>01</span>What do I get for my sponsorship?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>You get your logo on the T-shirt for 2 Devcon days, 2 short-form videos, an appreciation post introducing your project, and a collection of photos featuring your brand.</p></AccordionContent></AccordionItem>
-          <AccordionItem value="capacity" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>02</span>How many projects can participate?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>There are only 8 positions. During the four-day auction, an existing holder can be replaced only by a confirmed payment equal to 1.5 times the current price. The holder at the deadline wins the position.</p></AccordionContent></AccordionItem>
-          <AccordionItem value="payment" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>03</span>How do I pay?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>Crypto only. Choose Ethereum, Arbitrum, Polygon, Base or Arc at checkout. Pay in USDC. The exact token, network and amount are verified on-chain.</p></AccordionContent></AccordionItem>
-          <AccordionItem value="refund" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>04</span>What happens if I am outbid or the campaign doesn&apos;t raise enough?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>If another project outbids you, your confirmed payment will be fully refunded. If the campaign raises less than 50% of the $2,200 target ($1,100) by the end of the auction, all confirmed current sponsorship payments will be fully refunded.</p></AccordionContent></AccordionItem>
-        </Accordion>
-      </section>
+
 
 
 
@@ -324,6 +315,28 @@ export default function Home() {
 
 
 
+      <section className="section wrap event-section" id="event" aria-labelledby="event-heading">
+        <div className="event-box">
+          <div className="editorial-heading"><span className="eyebrow">THE EVENT</span><h2 id="event-heading">Devcon Mumbai 2026</h2></div>
+          <div className="event-copy">
+            <p>Devcon is the Ethereum ecosystem&apos;s flagship gathering, bringing developers, builders, and crypto communities together for four days of talks, collaboration, and networking.</p>
+            <p>From November 3–6, Mumbai becomes a meeting point for the global Ethereum community. I&apos;ll be there, wearing this T-shirt on 3rd and 4th Nov.</p>
+            <p>Traditional event sponsorship can be expensive. This is a more accessible way to get your brand in front of the community through my content and event presence.</p>
+            <a className="event-link" href="https://devcon.org/" target="_blank" rel="noopener noreferrer">Explore Devcon <ArrowUpRight size={17} /></a>
+          </div>
+        </div>
+      </section>
+
+      <section className="section wrap faq-section" id="faq">
+        <div className="editorial-heading faq-heading"><span className="mono">FAQ</span><h2>Questions, answered.</h2></div>
+        <Accordion type="single" collapsible className="faq-list">
+          <AccordionItem value="deliverables" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>01</span>What do I get for my sponsorship?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>You get your logo on the T-shirt for 2 Devcon days, 2 short-form videos, an appreciation post introducing your project, and a collection of photos featuring your brand.</p></AccordionContent></AccordionItem>
+          <AccordionItem value="capacity" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>02</span>How many projects can participate?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>There are only 8 positions. During the four-day auction, an existing holder can be replaced only by a confirmed payment equal to 1.5 times the current price. The holder at the deadline wins the position.</p></AccordionContent></AccordionItem>
+          <AccordionItem value="payment" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>03</span>How do I pay?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>Crypto only. Choose Ethereum, Arbitrum, Polygon, Base or Arc at checkout. Pay in USDC. The exact token, network and amount are verified on-chain.</p></AccordionContent></AccordionItem>
+          <AccordionItem value="refund" className="faq-item"><AccordionTrigger className="faq-trigger"><span className="faq-question"><span>04</span>What happens if I am outbid or the campaign doesn&apos;t raise enough?</span></AccordionTrigger><AccordionContent className="faq-answer"><p>If another project outbids you, your confirmed payment will be fully refunded. If the campaign raises less than 50% of the $2,200 target ($1,100) by the end of the auction, all confirmed current sponsorship payments will be fully refunded.</p></AccordionContent></AccordionItem>
+        </Accordion>
+      </section>
+
       <footer className="wrap"><div className="footer-contact">DMs open: <a href="https://t.me/manishweb3" target="_blank" rel="noreferrer">Manish</a></div>
         <div className="footer-right">
           <a className="footer-social-pill" href="https://x.com/web3manish" target="_blank" rel="noopener noreferrer" aria-label="Web3Manish on X (opens in a new tab)">
@@ -331,7 +344,7 @@ export default function Home() {
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M21.543 7.104c.015.211.015.423.015.636 0 6.507-4.954 14.01-14.01 14.01v-.003A13.94 13.94 0 0 1 0 19.539a9.88 9.88 0 0 0 7.287-2.041 4.93 4.93 0 0 1-4.6-3.42 4.916 4.916 0 0 0 2.223-.084A4.926 4.926 0 0 1 .96 9.167v-.062a4.887 4.887 0 0 0 2.235.616A4.928 4.928 0 0 1 1.67 3.148 13.98 13.98 0 0 0 11.82 8.292a4.929 4.929 0 0 1 8.39-4.49 9.868 9.868 0 0 0 3.128-1.196 4.941 4.941 0 0 1-2.165 2.724A9.828 9.828 0 0 0 24 4.555a10.019 10.019 0 0 1-2.457 2.549z"/></svg>
             <span>@web3manish</span>
           </a>
-          <div className="footer-legal"><a href="/terms">Terms</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div>
+          <div className="footer-legal"><a href="/terms">Terms</a><a href="/refund-policy">Refund Policy</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div>
         </div>
       </footer>
 

@@ -116,7 +116,7 @@ h1 .accent-line{color:var(--brand-accent)}
 .print-slot:disabled{opacity:.8}
 .print-slot:hover:not(:disabled),.print-slot:focus-visible{background:rgba(var(--brand-rgb),.2);border-color:var(--brand-accent)}
 .print-slot.held{border-style:solid;background:rgba(247,243,234,.1)}
-.print-slot b{font-size:14px;color:#f7f3ea}
+.print-slot b{font-size:14px;color:#f7f3ea;overflow-wrap:anywhere;max-width:100%}
 .print-slot small{font-size:6px;color:rgba(247,243,234,.72)}
 .slot-plus{font-size:18px;line-height:1}
 .print-slot img{max-height:50%;width:90%;object-fit:contain}
@@ -326,7 +326,20 @@ footer{padding-top:43px;padding-bottom:37px}
 .shirt-slots{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
 .print-slot{min-width:0;min-height:0;overflow:hidden;position:relative;text-decoration:none}
 .print-slot img{position:absolute;inset:0;width:100%;height:100%;max-height:100%;padding:5px;object-fit:contain;display:block}
+.centered-portrait-hero .portrait-pair .portrait-preview .print-slot.has-logo{box-shadow:none;background:none;border:0;border-radius:0;padding:0;overflow:hidden}
+.centered-portrait-hero .portrait-pair .portrait-preview .print-slot.has-logo img{box-sizing:border-box;object-fit:contain;width:100%;max-width:100%;height:100%;max-height:100%;padding:4px}
+.centered-portrait-hero .portrait-pair .portrait-preview .print-slot.has-logo:focus-visible{outline:2px solid var(--brand-accent);outline-offset:2px}
 .sponsors article>a{display:block;width:100%}
+
+.event-box{border:1px solid var(--border);background:#fffdf9;border-radius:8px;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:40px;padding:36px;display:grid}
+.event-box .editorial-heading{margin:0;display:block}
+.event-box h2{letter-spacing:-.035em;color:#17151d;margin:16px 0 0;font-size:clamp(28px,3.5vw,42px);line-height:1.12}
+.event-copy{min-width:0}
+.event-copy p{color:#625d56;margin:0 0 18px;font-size:16px;line-height:1.75}
+.event-link{color:var(--brand-accent);text-underline-offset:5px;align-items:center;gap:6px;font-weight:650;text-decoration:underline;transition:text-underline-offset .18s;display:inline-flex}
+.event-link:hover{text-underline-offset:7px}
+.event-link:focus-visible{outline:2px solid var(--brand-accent);outline-offset:5px}
+@media(max-width:700px){.event-box{grid-template-columns:minmax(0,1fr);gap:24px;padding:24px}.event-copy p{font-size:15px}}
 
 
 /* Editorial motion: extend the existing one-time reveal system, with no new engine. */
