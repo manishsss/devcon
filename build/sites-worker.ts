@@ -1,8 +1,16 @@
 import handler from "vinext/server/fetch-handler";
 import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
+import { monitorPayments } from "../lib/payment";
 
 export default {
+  scheduled(_controller: ScheduledController, _env: Cloudflare.Env, ctx: ExecutionContext) {
+    // Operator must configure a cron trigger; exported code alone does not run it.
+    ctx.waitUntil(monitorPayments().then(result => {
+      console.log(JSON.stringify({ event: "payment_monitor_complete", ...result }));
+      if (result.failed) throw new Error("Payment monitoring failed; inspect protected monitoring state.");
+    }));
+  },
   fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
     let binding = ctx.props?.CONNECTORS;
     // Local preview emulates the same request-scoped capability. This branch and

@@ -3,6 +3,8 @@ import { config, db, dispatchNotification, queueNotification, ready, rpc, settle
 import { PAYMENT_CONFIRMED_EMAIL, outbidEmail, paymentConfirmedEmail } from './sponsor-email';
 import { formatUsdcUnits } from './auction';
 import { paymentRail, TREASURY_WALLET_ADDRESS } from './payment-networks';
+import { exactUsdcAmount, qrPaymentUri } from './qr-payment';
+import { runPaymentMonitor } from './payment-monitor';
 
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const addressFromTopic = (topic: string) => `0x${topic.slice(-40)}`;
@@ -30,8 +32,9 @@ const resultFor = (row: any, overrides: any = {}) => ({
   project: row.project_name,
   slot: row.slot_number,
   position: row.position,
-  price: row.claim_price_units ? displayUnits(row.claim_price_units) : row.amount,
-  priceUnits: row.claim_price_units || row.amount_units,
+  price: JSON.parse(row.verification_config).paymentMode==='qr' ? exactUsdcAmount(row.amount_units) : (row.claim_price_units ? displayUnits(row.claim_price_units) : row.amount),
+  priceUnits: row.amount_units || row.claim_price_units,
+  claimPriceUnits: row.claim_price_units,
   token: row.token,
   network: row.chain,
   logoStatus: row.logo_status,
@@ -70,7 +73,7 @@ async function markLatePayment(row:any,hash:string,confirmations:number,message:
     type:'LATE_PAYMENT_REFUND',
     recipient:row.email,
     subject:'Devcon claim payment refund update',
-    body:`Your $${displayUnits(row.claim_price_units)} ${row.token} on ${row.chain} payment for Slot ${String(row.slot_number).padStart(2,'0')} was confirmed after the claim window had closed. It did not replace the current holder and is marked REFUND_PENDING. The refund is not complete until an on-chain refund reference is recorded.`,
+    body:`Your $${displayUnits(row.amount_units||row.claim_price_units)} ${row.token} on ${row.chain} payment for Slot ${String(row.slot_number).padStart(2,'0')} was confirmed after the claim window had closed. It did not replace the current holder and is marked REFUND_PENDING. The refund is not complete until an on-chain refund reference is recorded.`,
   });
   await dispatchNotification(notificationId);
   return resultFor(final,{message});
@@ -79,11 +82,11 @@ async function markLatePayment(row:any,hash:string,confirmations:number,message:
 async function confirmClaim(row:any,hash:string,confirmations:number){
   const confirmedAt=Date.now();
   const confirmationId=`payment-confirmed:${row.payment_id}`;
-  const confirmation=paymentConfirmedEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.claim_price_units,network:row.chain});
+  const confirmation=paymentConfirmedEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.amount_units||row.claim_price_units,network:row.chain});
   const slot:any=await db().prepare('SELECT order_id,holder_sponsorship_id,current_price_units,claim_count FROM slots WHERE id=?').bind(row.slot_number).first();
   const expectedPrevious=row.previous_holder_sponsorship_id||null;
   const expectedCurrent=slot?.current_price_units||null;
-  const previous:any=expectedPrevious?await db().prepare(`SELECT sp.id,sp.slot_number,sp.claim_price_units,s.id AS sponsor_id,s.project_name,s.email,p.id AS payment_id,p.token,p.chain
+  const previous:any=expectedPrevious?await db().prepare(`SELECT sp.id,sp.slot_number,sp.claim_price_units,s.id AS sponsor_id,s.project_name,s.email,p.id AS payment_id,p.token,p.chain,p.amount_units
     FROM sponsorships sp JOIN sponsors s ON s.id=sp.sponsor_id JOIN payments p ON p.sponsorship_id=sp.id WHERE sp.id=?`).bind(expectedPrevious).first():null;
   const statements:any[]=[
     db().prepare(`UPDATE slots SET holder_sponsorship_id=?,current_price_units=?,claim_count=claim_count+1,order_id=NULL,expires=NULL
@@ -102,7 +105,7 @@ async function confirmClaim(row:any,hash:string,confirmations:number){
   ];
   if(previous){
     const notificationId=`outbid:${previous.id}`;
-    const copy=outbidEmail({project:previous.project_name,slot:row.slot_number,amountUnits:previous.claim_price_units,newAmountUnits:row.claim_price_units});
+    const copy=outbidEmail({project:previous.project_name,slot:row.slot_number,amountUnits:previous.amount_units||previous.claim_price_units,newAmountUnits:row.claim_price_units});
     statements.push(
       db().prepare("UPDATE sponsorships SET status='OUTBID',updated_at=? WHERE id=? AND status='CURRENT_HOLDER' AND EXISTS(SELECT 1 FROM slots WHERE holder_sponsorship_id=?)").bind(confirmedAt,previous.id,row.id),
       db().prepare(`UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units,refund_updated_at=?
@@ -138,16 +141,17 @@ export async function verifyPayment(body: any) {
   let hash = String(body.tx || '').trim().toLowerCase();
   const row: any = await checkoutRecord(id, secret);
   if (!row) throw new Error('Reservation unavailable.');
+  const verification = JSON.parse(row.verification_config);
+  const qr=verification.paymentMode==='qr';
   if (['CONFIRMED','LATE_CONFIRMED','FAILED'].includes(row.payment_status)) return resultFor(row);
-  if(row.payment_status==='CANCELLED'&&!hash&&!row.transaction_hash)return resultFor(row,{message:'This unpaid reservation was cancelled.'});
+  if(row.payment_status==='CANCELLED'&&!qr&&!hash&&!row.transaction_hash)return resultFor(row,{message:'This unpaid reservation was cancelled.'});
   // Rotate background scans fairly even when an unpaid checkout has no hash.
   await db().prepare('UPDATE sponsorships SET updated_at=? WHERE id=?').bind(Date.now(),row.id).run();
-  hash = hash || row.transaction_hash || (row.payment_status==='CANCELLED'?null:await discoverPayment(row));
+  hash = hash || row.transaction_hash || (row.payment_status==='CANCELLED'&&!qr?null:await discoverPayment(row));
   if (!hash) return resultFor(row,{status:'PENDING',message:'Watching for your exact USDC transfer on '+row.chain+'.'});
   if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error('Enter a valid transaction hash.');
   if (row.transaction_hash && row.transaction_hash.toLowerCase() !== hash.toLowerCase()) throw new Error('This reservation already has a payment under verification.');
 
-  const verification = JSON.parse(row.verification_config);
   const {asset}=paymentRail(row.chain_id,row.token);
   if(row.token_contract.toLowerCase()!==asset.address.toLowerCase()||verification.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS)throw new Error('This checkout has an unsupported USDC contract or recipient.');
   if (Number(await rpc(verification, 'eth_chainId', [])) !== row.chain_id) throw new Error('Configured RPC returned a different chain.');
@@ -261,11 +265,7 @@ export async function discoverPayment(row:any){
 }
 
 export async function monitorPayments() {
-  const { results } = await db().prepare(`SELECT sp.id,sp.secret,p.transaction_hash AS tx FROM sponsorships sp
-    JOIN payments p ON p.sponsorship_id=sp.id WHERE
-    (p.status IN ('PAYMENT_DETECTED','CONFIRMING') OR (p.status IN ('PENDING','EXPIRED') AND sp.reserved_until>?))
-    ORDER BY sp.updated_at,sp.created_at LIMIT 8`).bind(Date.now()-3600000).all();
-  await Promise.all(results.map(async (row: any) => { try { await verifyPayment({ id: row.id, secret: row.secret, tx: row.tx }); } catch {} }));
+  return runPaymentMonitor(db(),verifyPayment);
 }
 
 export async function verifyRefund(payment:any,hash:string){
@@ -302,4 +302,27 @@ export async function paymentPreflight(body:any){
   const {asset}=paymentRail(row.chain_id,row.token);
   if(verification.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS||row.token_contract.toLowerCase()!==asset.address.toLowerCase())throw new Error('Payment configuration changed. Do not send funds.');
   return {treasury:verification.treasury,priceUnits:row.amount_units,chainId:row.chain_id,tokenAddress:row.token_contract};
+}
+
+export async function qrPaymentDetails(body:any){
+  const row:any=await checkoutRecord(String(body.id||''),String(body.secret||''));
+  if(!row)throw new Error('Reservation unavailable.');
+  const verification=JSON.parse(row.verification_config);
+  const {network,asset}=paymentRail(row.chain_id,row.token);
+  if(verification.paymentMode!=='qr'||verification.treasury.toLowerCase()!==TREASURY_WALLET_ADDRESS||row.token_contract.toLowerCase()!==asset.address.toLowerCase())throw new Error('QR payment configuration is unavailable.');
+  const campaign:any=await db().prepare('SELECT status,ends_at FROM auction_campaign WHERE id=1').first();
+  const slot:any=await db().prepare('SELECT order_id FROM slots WHERE id=?').bind(row.slot_number).first();
+  const now=Date.now();
+  const payable=row.payment_status==='PENDING'&&!row.transaction_hash&&row.reserved_until-now>=60000&&slot?.order_id===row.id&&campaign?.status==='LIVE'&&(campaign.ends_at===null||campaign.ends_at>now);
+  return {
+    id:row.id,secret:row.secret,reservedUntil:row.reserved_until,paymentMode:'qr',qrPayable:payable,
+    price:exactUsdcAmount(row.amount_units),priceUnits:row.amount_units,
+    claimPrice:displayUnits(row.claim_price_units),claimPriceUnits:row.claim_price_units,
+    identifyingFraction:exactUsdcAmount(BigInt(row.amount_units)-BigInt(row.claim_price_units)),
+    position:row.position,project:row.project_name,wallet:row.wallet_address,treasury:verification.treasury,
+    chainId:network.id,chainName:network.name,token:asset.symbol,tokenLabel:asset.label,tokenAddress:asset.address,
+    decimals:asset.decimals,gas:network.gas,explorer:network.explorer,
+    paymentUri:qrPaymentUri({chainId:network.id,tokenAddress:asset.address,treasury:verification.treasury,amountUnits:row.amount_units}),
+    status:row.payment_status,transactionHash:row.transaction_hash,
+  };
 }

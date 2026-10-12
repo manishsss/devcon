@@ -104,3 +104,15 @@ export const notifications=sqliteTable('notifications',{
   createdAt:integer('created_at').notNull(),
   sentAt:integer('sent_at'),
 },t=>[index('idx_notifications_status').on(t.status),uniqueIndex('notifications_type_sponsorship_unique').on(t.type,t.sponsorshipId)]);
+
+export const qrPaymentAmounts=sqliteTable('qr_payment_amounts',{
+  id:text('id').primaryKey(),
+  chainId:integer('chain_id').notNull(),
+  tokenContract:text('token_contract').notNull(),
+  treasury:text('treasury').notNull(),
+  amountUnits:text('amount_units').notNull(),
+  baseUnits:text('base_units').notNull(),
+  clientKey:text('client_key').notNull(),
+  reservedUntil:integer('reserved_until').notNull(),
+  createdAt:integer('created_at').notNull(),
+},t=>[uniqueIndex('qr_amount_network_unique').on(t.chainId,t.tokenContract,t.treasury,t.amountUnits),index('qr_client_lease').on(t.clientKey,t.reservedUntil)]);

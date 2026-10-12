@@ -127,7 +127,7 @@ export async function dispatchNotification(id:string){
 
 async function campaignResultNotificationStatements(successful:boolean,now:number){
   const {results}=await db().prepare(`SELECT sp.id AS sponsorship_id,sp.slot_number,sp.claim_price_units,
-    s.id AS sponsor_id,s.project_name,s.email,p.id AS payment_id,p.token,p.chain
+    s.id AS sponsor_id,s.project_name,s.email,p.id AS payment_id,p.token,p.chain,p.amount_units
     FROM slots sl
     JOIN sponsorships sp ON sp.id=sl.holder_sponsorship_id
     JOIN sponsors s ON s.id=sp.sponsor_id
@@ -135,7 +135,7 @@ async function campaignResultNotificationStatements(successful:boolean,now:numbe
     WHERE p.status='CONFIRMED'`).all();
   return (results as any[]).map(row=>{
     const id=`campaign-${successful?'success':'refund'}:${row.sponsorship_id}`;
-    const copy=campaignResultEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.claim_price_units,successful});
+    const copy=campaignResultEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.amount_units||row.claim_price_units,successful});
     return db().prepare(`INSERT OR IGNORE INTO notifications
       (id,sponsor_id,sponsorship_id,payment_id,type,recipient,subject,body,status,created_at)
       SELECT ?,?,?,?,?,?,?,?,'PENDING',?
@@ -260,6 +260,7 @@ export async function inventory(){
     thresholdDisplay:displayUnits(thresholdUnits),
     policy:c.policy,
     paymentsReady:paymentReady,
+    qrPaymentsEnabled:(env as any).UNIQUE_AMOUNT_QR_ENABLED==='1',
     claimsOpen:state==='LIVE'&&paymentReady,
     serverNow:now,
     auction:{

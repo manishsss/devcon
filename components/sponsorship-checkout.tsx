@@ -7,6 +7,7 @@ import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-network
 import { stringToHex } from 'viem';
 import { discoverWallets, mobileWalletLinks, walletCheckoutUrl, type WalletOption, type WalletProvider } from '@/lib/wallet-discovery';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import QrPaymentRequest from '@/components/qr-payment-request';
 
 type Slot = {
   id: number;
@@ -21,6 +22,11 @@ type Slot = {
 };
 
 type Reservation = {
+  paymentMode?: 'wallet' | 'qr';
+  paymentUri?: string;
+  qrPayable?: boolean;
+  claimPrice?: string;
+  identifyingFraction?: string;
   id: string;
   secret: string;
   reservedUntil: number;
@@ -62,6 +68,7 @@ type Verification = {
 };
 
 type Props = {
+  qrPaymentsEnabled?: boolean;
   open: boolean;
   slot: Slot | null;
   paymentsReady: boolean;
@@ -82,7 +89,8 @@ const statusLabel = (status: string) => ({
   CANCELLED: 'RESERVATION CANCELLED',
 }[status] || status.replaceAll('_', ' '));
 
-export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsOpen, onOpenChange, onConfirmed }: Props) {
+export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsOpen, qrPaymentsEnabled=false, onOpenChange, onConfirmed }: Props) {
+  const [paymentMode, setPaymentMode] = useState<'wallet' | 'qr'>('wallet');
   const [chainId,setChainId]=useState(8453);
   const [selectedToken,setSelectedToken]=useState('USDC');
   const network=PAYMENT_NETWORKS.find(item=>item.id===chainId)!;
@@ -105,6 +113,8 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   useEffect(()=>discoverWallets(window,setWalletOptions),[]);
   useEffect(()=>{
     if(!open||!slot)return;
+    // Mobile app links require HTTPS. Local HTTP previews must still render.
+    if(window.location.protocol!=='https:'){setWalletLinks([]);return;}
     setWalletLinks(mobileWalletLinks(walletCheckoutUrl(window.location.origin,slot.id,chainId)));
   },[open,slot?.id,chainId]);
   useEffect(()=>{setWalletPicker(false);},[open,slot?.id]);
@@ -113,11 +123,23 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
   const checking=useRef(false);
   const cancelling=useRef(false);
   const paymentUncertain=useRef(false);
+  const checkoutContent=useRef<HTMLDivElement>(null);
   const savedKey=slot?`devcon-checkout:${slot.id}`:'';
+
+  useEffect(()=>{checkoutContent.current?.scrollTo({top:0});},[reservation?.id]);
 
   function remember(value: Reservation,hash='') {
     try { sessionStorage.setItem(savedKey,JSON.stringify({reservation:value,tx:hash,paymentUncertain:paymentUncertain.current})); } catch { /* Checkout still works when storage is unavailable. */ }
   }
+
+  useEffect(() => {
+    if (reservation?.paymentMode === 'qr') {
+      // External wallet transfers cannot be observed before their hash is mined.
+      // Never auto-cancel a displayed QR when the sponsor leaves this tab.
+      paymentUncertain.current = true;
+      remember(reservation, tx);
+    }
+  }, [reservation, tx]);
 
   useEffect(()=>{
     if(!open)return;
@@ -146,6 +168,8 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
   useEffect(() => {
     if (!open) return;
+    let current=true;
+    const controller=new AbortController();
     paymentUncertain.current=false;
     setReservation(null);
     setVerification(null);
@@ -160,14 +184,27 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     try {
       const saved=JSON.parse(sessionStorage.getItem(`devcon-checkout:${slot?.id}`)||'null');
       if(saved?.reservation?.id&&saved.reservation.secret&&saved.reservation.treasury?.toLowerCase()===TREASURY_WALLET_ADDRESS&&PAYMENT_NETWORKS.some(item=>item.id===saved.reservation.chainId)){
-        paymentUncertain.current=Boolean(saved.paymentUncertain);
-        setReservation(saved.reservation);
-        setTx(saved.tx||'');
-        setWallet(saved.reservation.wallet);
-        setVerification({status:saved.tx?'PAYMENT_DETECTED':'PENDING'});
+        if(saved.reservation.paymentMode==='qr'){
+          // Do not trust a cached URI, amount, token or wallet on browser restore.
+          setBusy(true);
+          void fetch('/api/checkout/qr-details',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:saved.reservation.id,secret:saved.reservation.secret}),signal:controller.signal})
+            .then(async response=>{const value=await response.json() as Reservation & {status:string;transactionHash?:string;error?:string};if(!response.ok)throw new Error(value.error||'Unable to restore QR payment.');return value;})
+            .then(value=>{if(current){paymentUncertain.current=true;setReservation(value);setTx(value.transactionHash||'');setWallet(value.wallet);setVerification({status:value.status});}})
+            .catch(error=>{if(current)setError(error.message||'Unable to restore QR payment.');})
+            .finally(()=>{if(current)setBusy(false);});
+        }else{
+          paymentUncertain.current=Boolean(saved.paymentUncertain);
+          setReservation(saved.reservation);
+          setTx(saved.tx||'');
+          setWallet(saved.reservation.wallet);
+          setVerification({status:saved.tx?'PAYMENT_DETECTED':'PENDING'});
+        }
       }
     } catch { /* Ignore an unavailable or invalid saved checkout. */ }
+    return ()=>{current=false;controller.abort();};
   }, [open, slot?.id]);
+
+  useEffect(()=>{if(!qrPaymentsEnabled)setPaymentMode('wallet');},[qrPaymentsEnabled]);
 
   useEffect(() => {
     if (!open || !reservation || ['CONFIRMED', 'LATE_CONFIRMED'].includes(verification?.status || '')) return;
@@ -276,16 +313,18 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       payload.set('slot', String(slot.id));
       payload.set('chainId',String(chainId));
       payload.set('token',selectedToken);
-      const ethereum=requireProvider();
-      const accounts=await ethereum.request({method:'eth_requestAccounts'});
-      if(String(accounts?.[0]||'').toLowerCase()!==String(payload.get('wallet')).toLowerCase())throw new Error('Connect the payment wallet entered in your details.');
-      const challengeResponse=await fetch('/api/checkout/authorize',{method:'POST',body:payload});
-      const challenge=await challengeResponse.json() as {id:string;message:string;error?:string};
-      if(!challengeResponse.ok)throw new Error(challenge.error||'Unable to authorize checkout.');
-      const signature=await ethereum.request({method:'personal_sign',params:[stringToHex(challenge.message),accounts[0]]});
-      payload.set('authorization',challenge.id);
-      payload.set('signature',signature);
-      const response = await fetch('/api/reserve', { method: 'POST', body: payload });
+      if (paymentMode === 'wallet') {
+        const ethereum=requireProvider();
+        const accounts=await ethereum.request({method:'eth_requestAccounts'});
+        if(String(accounts?.[0]||'').toLowerCase()!==String(payload.get('wallet')).toLowerCase())throw new Error('Connect the payment wallet entered in your details.');
+        const challengeResponse=await fetch('/api/checkout/authorize',{method:'POST',body:payload});
+        const challenge=await challengeResponse.json() as {id:string;message:string;error?:string};
+        if(!challengeResponse.ok)throw new Error(challenge.error||'Unable to authorize checkout.');
+        const signature=await ethereum.request({method:'personal_sign',params:[stringToHex(challenge.message),accounts[0]]});
+        payload.set('authorization',challenge.id);
+        payload.set('signature',signature);
+      }
+      const response = await fetch(paymentMode === 'qr' ? '/api/checkout/qr' : '/api/reserve', { method: 'POST', body: payload });
       const result: any = await response.json();
       if (!response.ok) throw new Error(result.error || 'The reservation could not be created.');
       setReservation(result);
@@ -401,7 +440,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
   return (
     <Dialog open={open} onOpenChange={value=>{if(!paying&&!submitting.current){if(value)onOpenChange(true);else void cancelUnpaid();}}}>
-      <DialogContent positioning="custom" className="checkout" style={viewportStyle} showCloseButton={false}>
+      <DialogContent ref={checkoutContent} positioning="custom" className="checkout" style={viewportStyle} showCloseButton={false}>
         <div className="checkout-header">
         <div className="checkout-progress" aria-label="Checkout progress">
           <span className={!reservation ? 'active' : 'complete'}><b>01</b> DETAILS</span>
@@ -435,6 +474,11 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
             {!reservation ? (
               <form onSubmit={reserve} className="sponsor-form">
+                {qrPaymentsEnabled && <fieldset className="checkout-payment-choice"><legend>HOW WOULD YOU LIKE TO PAY?</legend>
+                  <label><input type="radio" name="paymentMode" value="wallet" checked={paymentMode==='wallet'} onChange={()=>setPaymentMode('wallet')} /> CONNECT & SIGN</label>
+                  <label><input type="radio" name="paymentMode" value="qr" checked={paymentMode==='qr'} onChange={()=>setPaymentMode('qr')} /> QR · NO CONNECTION OR SIGNATURE</label>
+                </fieldset>}
+                {paymentMode==='qr' && <p className="field-note">A tiny identifying fraction below 0.01 USDC is added to your payment. Send the full amount from the wallet address you enter. It is included in eligible refunds and excluded from auction pricing. QR requests remain reserved until expiry, even if closed.</p>}
                 <div className="form-grid">
                   <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{PAYMENT_NETWORKS.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>PAYMENT TOKEN<select value={selectedToken} onChange={event=>setSelectedToken(event.target.value)}>{network.tokens.map(item=><option key={item.symbol} value={item.symbol}>{item.label}</option>)}</select></label>
@@ -446,11 +490,11 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label>EMAIL *<input name="email" type="email" inputMode="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" autoCapitalize="none" spellCheck={false} enterKeyHint="next" /></label>
                   <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                 </div>
-                <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
+                {paymentMode==='wallet' && <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>}
                 <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
                 <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I agree to the <a href="/terms" target="_blank" rel="noopener noreferrer">Terms &amp; Conditions</a> and understand the sponsorship rules.</span></label>
-                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? 'AUTHORIZE IN YOUR WALLET…' : 'SIGN & CONTINUE TO PAYMENT'}</button>
+                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? (paymentMode==='qr'?'CREATING PAYMENT REQUEST…':'AUTHORIZE IN YOUR WALLET…') : (paymentMode==='qr'?'RESERVE & SHOW QR':'SIGN & CONTINUE TO PAYMENT')}</button>
               </form>
             ) : (
               <div className="payment-step">
@@ -463,6 +507,12 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <span className="network-mark">{reservation.chainName.toUpperCase()}</span>
                 </div>
 
+                {reservation.paymentMode==='qr' ? <>
+                  <QrPaymentRequest uri={reservation.paymentUri!} amount={reservation.price} network={reservation.chainName} treasury={reservation.treasury} wallet={reservation.wallet} claimPrice={reservation.claimPrice!} fraction={reservation.identifyingFraction!} active={reservation.qrPayable!==false&&remaining>=60&&!tx&&status==='PENDING'} copy={(value,label)=>void copy(value,label)} />
+                  {copied && <p role="status">{copied==='amount'?'Exact amount':'Receiver'} copied.</p>}
+                  <label className="qr-hash-field">TRANSACTION HASH · OPTIONAL<input value={tx} onChange={event=>setTx(event.target.value)} placeholder="0x…" autoCapitalize="none" spellCheck={false} /></label>
+                  <button type="button" className="button secondary" disabled={busy} onClick={()=>void verifyPayment(tx)}>CHECK PAYMENT</button>
+                </> : <>
                 <button className="button wallet-button" type="button" onClick={connectWallet}>
                   <Wallet size={17} /> {wallet ? `${connected ? 'CONNECTED' : 'WRONG WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET'}
                 </button>
@@ -470,6 +520,8 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                 <button className="button primary checkout-primary" type="button" onClick={payWithWallet} disabled={remaining<60 || busy || paying || Boolean(tx) || status==='FAILED'}>
                   {paying ? 'CONFIRM IN YOUR WALLET…' : tx ? 'PAYMENT SENT · VERIFYING' : `PAY $${reservation.price} ${reservation.token}`}
                 </button>
+
+                </>}
 
                 <div className={`payment-status ${['PAYMENT_DETECTED', 'CONFIRMING'].includes(visibleStatus) ? 'is-live' : ''}`} aria-live="polite">
                   <span className="status-dot" />
@@ -511,7 +563,7 @@ function Success({ reservation, verification, tx, explorerUrl, onClose }: { rese
         <div><dt>PROJECT</dt><dd>{verification.project || reservation.project}</dd></div>
         <div><dt>SPOT</dt><dd>Slot {String(verification.slot || '').padStart(2, '0')}</dd></div>
         <div><dt>POSITION</dt><dd>{verification.position || reservation.position}</dd></div>
-        <div><dt>CURRENT PRICE</dt><dd>${verification.price || reservation.price} {verification.token || reservation.token}</dd></div>
+        <div><dt>PAYMENT</dt><dd>${verification.price || reservation.price} {verification.token || reservation.token}</dd></div>
         <div><dt>NETWORK</dt><dd>{verification.network || reservation.chainName}</dd></div>
         <div className="wide"><dt>TRANSACTION</dt><dd>{truncate(verification.transactionHash || tx, 10, 8)}</dd></div>
       </dl>

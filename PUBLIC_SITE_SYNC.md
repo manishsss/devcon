@@ -2,6 +2,8 @@
 
 This branch syncs publicly observable content from https://devcon.manishh.xyz into repository source based on main commit `164625a`. The public website was read only; nothing was deployed, configured, submitted or activated.
 
+This report records sync commit `541f934` on `sync/public-site-20261012`. Later QR-feature changes are described in `QR_PAYMENTS.md`; the CSS equality below applies to that sync commit, not subsequent feature additions.
+
 Changes recovered from public HTML, CSS and the published homepage client bundle:
 
 - Homepage title: Put Your Brand on Me.

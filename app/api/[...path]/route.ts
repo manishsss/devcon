@@ -3,11 +3,14 @@ import { cancelCheckout } from '@/lib/checkout-cancellation';
 import { queueSponsorCancellation } from '@/lib/sponsor-cancellation';
 import { recordVerifiedRefund } from '@/lib/refund-confirmation';
 import { env } from 'cloudflare:workers';
-import {paymentPreflight,verifyPayment,monitorPayments} from '@/lib/payment';
+import {paymentPreflight,qrPaymentDetails,verifyPayment,monitorPayments} from '@/lib/payment';
 import {admin,closeManualAuction,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
 import {AUCTION_DURATION_MS,USDC_SCALE,claimPriceUnits,formatUsdcUnits,initialPriceUnits} from '@/lib/auction';
 import { paymentRail } from '@/lib/payment-networks';
 import { checkoutDigest,createAuthorization,verifyAuthorization } from '@/lib/checkout-authorization';
+import { requestBudget } from '@/lib/abuse';
+import { allocateQrAmount, exactUsdcAmount, qrClientKey, qrPaymentUri } from '@/lib/qr-payment';
+import { maintenanceAuthorized } from '@/lib/payment-monitor';
 
 export const dynamic='force-dynamic';
 const json=(value:any,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
@@ -74,6 +77,13 @@ async function route(request:Request,context:any){
   try{
     const {path}=await context.params;
     const endpoint=path.join('/');
+    if(endpoint==='checkout/qr'){
+      if((env as any).UNIQUE_AMOUNT_QR_ENABLED!=='1')return json({error:'QR checkout is not enabled.'},404);
+      const location=new URL(request.url);
+      if(location.protocol!=='https:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname))return json({error:'QR checkout requires HTTPS.'},403);
+      if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'Invalid request origin.'},403);
+      await requestBudget(db(),request,'qr-checkout',2);
+    }
     if(request.method!=='GET'&&!sameOrigin(request))return json({error:'Invalid request origin.'},403);
 
     if(request.method==='GET'&&endpoint==='inventory'){
@@ -181,7 +191,13 @@ async function route(request:Request,context:any){
       return json({error:'Admin action not found.'},404);
     }
 
-    if(request.method==='POST'&&['reserve','checkout/authorize'].includes(endpoint)){
+    if(request.method==='POST'&&endpoint==='maintenance/monitor'){
+      if(!maintenanceAuthorized(request,(env as any).MAINTENANCE_TOKEN))return json({error:'Unauthorized.'},403);
+      return json(await monitorPayments());
+    }
+
+    if(request.method==='POST'&&['reserve','checkout/authorize','checkout/qr'].includes(endpoint)){
+      const qr=endpoint==='checkout/qr';
       await initialize();
       const now=Date.now();
       const campaign:any=await settleCampaign(now);
@@ -218,31 +234,36 @@ async function route(request:Request,context:any){
       const requiredUnits=claimPriceUnits(startingUnits,currentUnits);
       const priceDisplay=displayUnits(requiredUnits);
       const origin=new URL(request.url).origin;
-      const digest=await checkoutDigest(form,origin,current.treasury,requiredUnits.toString());
+      const digest=qr?'':await checkoutDigest(form,origin,current.treasury,requiredUnits.toString());
       if(endpoint==='checkout/authorize')return json(await createAuthorization({wallet:values.wallet,digest,origin,treasury:current.treasury,price:priceDisplay,project:values.project,slot:slotNumber,network:network.name,chainId:network.id,expiresAt:Math.min(Date.now()+300000,campaign.ends_at??Infinity)}));
-      const authorizationId=await verifyAuthorization(form,values.wallet,digest);
+      const authorizationId=qr?null:await verifyAuthorization(form,values.wallet,digest);
       if(Number(await rpc(rail,'eth_chainId',[]))!==network.id)throw new Error('The selected network is unavailable. No payment has been requested.');
       if(Number(await rpc(rail,'eth_call',[{to:asset.address,data:'0x313ce567'},'latest']))!==asset.decimals)throw new Error('Token validation failed. No payment has been requested.');
       const balance=BigInt(await rpc(rail,'eth_call',[{to:asset.address,data:'0x70a08231'+values.wallet.slice(2).toLowerCase().padStart(64,'0')},'latest']));
       if(balance<requiredUnits)throw new Error('Your wallet needs at least '+priceDisplay+' USDC on '+network.name+' before reserving this spot.');
+      if(qr&&balance===requiredUnits)throw new Error('QR payment needs a tiny additional identifying fraction below 0.01 USDC. Add USDC or use signed-wallet checkout.');
       const sponsorId=crypto.randomUUID(),sponsorshipId=crypto.randomUUID(),paymentId=crypto.randomUUID(),secret=crypto.randomUUID();
       const createdAt=Date.now(),reservedUntil=Math.min(createdAt+current.reservationMinutes*60000,campaign.ends_at??Infinity),logoKey=sponsorId;
       if(reservedUntil<=createdAt)return json({error:'The auction is closed.'},409);
+      const extraAvailable=balance-requiredUnits;
+      const paymentUnits=qr?await allocateQrAmount(db(),{id:sponsorshipId,chainId:network.id,tokenAddress:asset.address,treasury:current.treasury,baseUnits:requiredUnits,clientKey:await qrClientKey(request),reservedUntil,maximumTagUnits:Number(extraAvailable>BigInt(9999)?BigInt(9999):extraAvailable)},createdAt):requiredUnits;
+      if(balance<paymentUnits)throw new Error('Your sending wallet needs '+exactUsdcAmount(paymentUnits)+' USDC including the QR identifying fraction.');
+      const paymentDisplay=qr?exactUsdcAmount(paymentUnits):priceDisplay;
       const startBlock=Number(await rpc(rail,'eth_blockNumber',[]));
-      const snapshot={startBlock,scanBlock:startBlock,chainName:network.name,chainId:network.id,rpc:rail.rpc,explorer:network.explorer,tokenAddress:asset.address,token:asset.symbol,treasury:current.treasury,decimals:asset.decimals,confirmations:network.confirmations};
+      const snapshot={startBlock,scanBlock:startBlock,chainName:network.name,chainId:network.id,rpc:rail.rpc,explorer:network.explorer,tokenAddress:asset.address,token:asset.symbol,treasury:current.treasury,decimals:asset.decimals,confirmations:network.confirmations,paymentMode:qr?'qr':'wallet'};
       await (env as any).BUCKET.put(logoKey,bytes,{httpMetadata:{contentType:mime}});
       try{await db().batch([
-        db().prepare('UPDATE checkout_authorizations SET consumed_by=? WHERE id=? AND consumed_by IS NULL AND expires_at>?').bind(sponsorshipId,authorizationId,createdAt),
+        ...(qr?[]:[db().prepare('UPDATE checkout_authorizations SET consumed_by=? WHERE id=? AND consumed_by IS NULL AND expires_at>?').bind(sponsorshipId,authorizationId,createdAt)]),
         db().prepare(`UPDATE slots SET order_id=?,expires=? WHERE id=? AND order_id IS NULL AND disabled=0
           AND holder_sponsorship_id IS ? AND current_price_units IS ?
-          AND EXISTS(SELECT 1 FROM checkout_authorizations WHERE id=? AND consumed_by=?)
+          AND (?=1 OR EXISTS(SELECT 1 FROM checkout_authorizations WHERE id=? AND consumed_by=?))
           AND NOT EXISTS(SELECT 1 FROM sponsorships sp JOIN payments p ON p.sponsorship_id=sp.id
             WHERE LOWER(p.wallet_address)=? AND sp.status IN ('RESERVED','PAYMENT_PENDING') AND sp.reserved_until>?)
           AND EXISTS(SELECT 1 FROM auction_campaign WHERE id=1 AND status='LIVE' AND (ends_at IS NULL OR ends_at>?))`)
-          .bind(sponsorshipId,reservedUntil,slotNumber,slot.holder_sponsorship_id||null,slot.current_price_units||null,authorizationId,sponsorshipId,values.wallet,createdAt,createdAt),
+          .bind(sponsorshipId,reservedUntil,slotNumber,slot.holder_sponsorship_id||null,slot.current_price_units||null,qr?1:0,authorizationId,sponsorshipId,values.wallet,createdAt,createdAt),
         db().prepare('INSERT INTO sponsors(id,project_name,x_handle,website,contact_name,email,wallet_address,logo_url,logo_status,description,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)').bind(sponsorId,values.project,values.x,values.website||null,values.contact,values.email,values.wallet,logoKey,'PENDING_REVIEW',values.description,createdAt,slotNumber,sponsorshipId),
         db().prepare("INSERT INTO sponsorships(id,secret,slot_number,position,price_usd,claim_price_units,previous_holder_sponsorship_id,is_challenge,status,sponsor_id,reserved_until,terms_accepted,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,'RESERVED',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)").bind(sponsorshipId,secret,slotNumber,positions[slotNumber-1],Number(requiredUnits/USDC_SCALE),requiredUnits.toString(),slot.holder_sponsorship_id||null,slot.holder_sponsorship_id?1:0,sponsorId,reservedUntil,1,createdAt,createdAt,slotNumber,sponsorshipId),
-        db().prepare("INSERT INTO payments(id,sponsor_id,sponsorship_id,slot_id,wallet_address,token,token_contract,chain,chain_id,amount,amount_usd,amount_units,status,confirmations,verification_config,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING',0,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)").bind(paymentId,sponsorId,sponsorshipId,slotNumber,values.wallet,asset.symbol,asset.address,network.name,network.id,priceDisplay,Number(requiredUnits/USDC_SCALE),requiredUnits.toString(),JSON.stringify(snapshot),createdAt,slotNumber,sponsorshipId),
+        db().prepare("INSERT INTO payments(id,sponsor_id,sponsorship_id,slot_id,wallet_address,token,token_contract,chain,chain_id,amount,amount_usd,amount_units,status,confirmations,verification_config,created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING',0,?,? WHERE EXISTS(SELECT 1 FROM slots WHERE id=? AND order_id=?)").bind(paymentId,sponsorId,sponsorshipId,slotNumber,values.wallet,asset.symbol,asset.address,network.name,network.id,paymentDisplay,Number(requiredUnits/USDC_SCALE),paymentUnits.toString(),JSON.stringify(snapshot),createdAt,slotNumber,sponsorshipId),
       ]);}catch(error){await (env as any).BUCKET.delete(logoKey);throw error;}
       const held:any=await db().prepare('SELECT order_id FROM slots WHERE id=?').bind(slotNumber).first();
       if(held?.order_id!==sponsorshipId){
@@ -255,7 +276,9 @@ async function route(request:Request,context:any){
         return json({error:'This spot was reserved first, or your wallet already has an active checkout. Finish that payment or wait for its reservation to expire.'},409);
       }
       return json({
-        id:sponsorshipId,secret,reservedUntil,price:priceDisplay,priceUnits:requiredUnits.toString(),position:positions[slotNumber-1],
+        id:sponsorshipId,secret,reservedUntil,price:paymentDisplay,priceUnits:paymentUnits.toString(),position:positions[slotNumber-1],
+        paymentMode:qr?'qr':'wallet',claimPrice:priceDisplay,claimPriceUnits:requiredUnits.toString(),
+        ...(qr?{identifyingFraction:exactUsdcAmount(paymentUnits-requiredUnits),paymentUri:qrPaymentUri({chainId:network.id,tokenAddress:asset.address,treasury:current.treasury,amountUnits:paymentUnits.toString()})}:{}),
         currentPrice:currentUnits===null?null:displayUnits(currentUnits),isChallenge:Boolean(slot.holder_sponsorship_id),
         project:values.project,wallet:values.wallet,treasury:current.treasury,chainName:network.name,chainId:network.id,
         token:asset.symbol,tokenLabel:asset.label,tokenAddress:asset.address,decimals:asset.decimals,explorer:network.explorer,gas:network.gas,
@@ -268,10 +291,11 @@ async function route(request:Request,context:any){
     }
     if(request.method==='POST'&&endpoint==='checkout/cancel')return json(await cancelCheckout(await request.json()));
     if(request.method==='POST'&&endpoint==='checkout/preflight')return json(await paymentPreflight(await request.json()));
+    if(request.method==='POST'&&endpoint==='checkout/qr-details')return json(await qrPaymentDetails(await request.json()));
     return json({error:'Not found.'},404);
   }catch(error:any){
     console.error('Campaign request failed',error?.message);
-    return json({error:error?.message||'Request unavailable. Please try again.'},400);
+    return json({error:error?.message||'Request unavailable. Please try again.'},error?.status||400);
   }
 }
 

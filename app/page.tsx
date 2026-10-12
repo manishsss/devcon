@@ -51,6 +51,7 @@ type Inventory = {
   policy?: string;
   paymentsReady: boolean;
   claimsOpen: boolean;
+  qrPaymentsEnabled?: boolean;
   serverNow: number;
   auction: {
     status: 'UPCOMING' | 'LIVE' | 'CLOSED' | 'REFUNDED' | 'SUCCESSFUL';
@@ -353,6 +354,7 @@ export default function Home() {
         slot={chosen}
         paymentsReady={data.paymentsReady}
         claimsOpen={data.claimsOpen}
+        qrPaymentsEnabled={data.qrPaymentsEnabled}
         onOpenChange={(next) => { if (!next) { setChosen(null); refresh(); } }}
         onConfirmed={refresh}
       />
