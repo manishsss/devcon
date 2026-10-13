@@ -5,8 +5,9 @@ import { database } from './database.mjs';
 import { dispatchNotification, initialize, inventory } from '../lib/campaign';
 import { paymentPreflight, verifyPayment, verifyRefund } from '../lib/payment';
 import { cancelCheckout } from '../lib/checkout-cancellation';
+import { allocateQrAmount } from '../lib/qr-payment';
 import { PAYMENT_NETWORKS } from '../lib/payment-networks';
-import { recordVerifiedRefund } from '../lib/refund-confirmation';
+import { recordManualRefund, recordVerifiedRefund } from '../lib/refund-confirmation';
 
 const treasury = '0x7c7ddb2c72725563816d5adc7137043d831ebcbe';
 const wallet = '0x1111111111111111111111111111111111111111';
@@ -16,6 +17,7 @@ const blockHash = '0x' + 'b'.repeat(64);
 const topic = (address: string) => '0x' + address.slice(2).padStart(64, '0');
 const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const originalFetch = globalThis.fetch;
+const originalNow = Date.now;
 let db: ReturnType<typeof database>;
 let transaction: any;
 let receipt: any;
@@ -24,6 +26,7 @@ let head: number;
 let chainId: number;
 
 beforeEach(async () => {
+  const fixedNow=originalNow();Date.now=()=>fixedNow;
   db = database();
   Object.assign(env, { DB: db, TREASURY_WALLET_ADDRESS: treasury });
   await initialize();
@@ -43,7 +46,7 @@ beforeEach(async () => {
   };
 });
 
-afterEach(() => { globalThis.fetch = originalFetch; delete (env as any).RESEND_API_KEY; delete (env as any).SPONSOR_FROM_EMAIL; db.sqlite.close(); });
+afterEach(() => { Date.now=originalNow;globalThis.fetch = originalFetch; delete (env as any).RESEND_API_KEY; delete (env as any).SPONSOR_FROM_EMAIL; db.sqlite.close(); });
 
 function seed(id = 'claim', slot = 1, payer = wallet, networkId = 8453, amount = 350, previous: string | null = null) {
   const now = Date.now();
@@ -167,6 +170,50 @@ test('refund confirmation is queued only after full on-chain verification and du
   const sent=messages.length;await recordVerifiedRefund(payment,refundHash,'test');assert.equal(messages.length,sent);
 });
 
+test('manual admin confirmation records the hash and provenance without an RPC call or an on-chain claim',async()=>{
+  seed();await verifyPayment({id:'claim',secret:'secret',tx:hash});
+  db.sqlite.prepare("UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units WHERE id='claim'").run();
+  db.sqlite.prepare("UPDATE sponsorships SET status='REFUND_PENDING' WHERE id='claim'").run();
+  const payment:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='claim'").get();
+  globalThis.fetch=async()=>{throw new Error('Manual refund must not make network requests without email configuration');};
+  const refundHash='0x'+'d'.repeat(64);
+  await recordManualRefund(payment,refundHash,'Sent by me');
+  const recorded:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='claim'").get();
+  assert.equal(recorded.refund_status,'REFUNDED');assert.equal(recorded.refund_transaction_hash,refundHash);
+  assert.match(recorded.refund_note,/Manually confirmed by administrator; no automated on-chain verification/);
+  assert.match(recorded.refund_note,/Sent by me/);
+  assert.equal(db.sqlite.prepare("SELECT status FROM sponsorships WHERE id='claim'").get()!.status,'REFUNDED');
+  const mail:any=db.sqlite.prepare("SELECT * FROM notifications WHERE type='REFUND_CONFIRMED'").get();
+  assert.match(mail.body,/marked complete by Manish/);assert.ok(!mail.body.includes('confirmed on-chain'));
+});
+
+test('duplicate and conflicting manual refund confirmations preserve the first record and one notification',async()=>{
+  seed();await verifyPayment({id:'claim',secret:'secret',tx:hash});
+  db.sqlite.prepare("UPDATE payments SET refund_status='REFUND_PENDING',refund_amount_units=amount_units WHERE id='claim'").run();
+  const payment:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='claim'").get();
+  const first='0x'+'d'.repeat(64),second='0x'+'e'.repeat(64);
+  await Promise.all([recordManualRefund(payment,first,'Original'),recordManualRefund(payment,first,'Duplicate')]);
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) n FROM notifications WHERE type='REFUND_CONFIRMED'").get()!.n,1);
+  await assert.rejects(recordManualRefund(payment,second,'Changed'),/different completed refund/);
+  const record:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='claim'").get();
+  assert.equal(record.refund_transaction_hash,first);assert.match(record.refund_note,/Original/);
+});
+
+test('manual refunds reject malformed hashes, unqueued payments and reuse of another payment refund hash',async()=>{
+  seed();await verifyPayment({id:'claim',secret:'secret',tx:hash});
+  const payment:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='claim'").get();
+  await assert.rejects(recordManualRefund(payment,'invalid',''),/valid refund transaction hash/);
+  const refundHash='0x'+'d'.repeat(64);
+  await assert.rejects(recordManualRefund(payment,refundHash,''),/not eligible/);
+  db.sqlite.prepare("UPDATE payments SET refund_status='REFUND_PENDING' WHERE id='claim'").run();
+  await recordManualRefund(payment,refundHash,'');
+  seed('another',2);
+  db.sqlite.prepare("UPDATE payments SET status='CONFIRMED',confirmed_at=?,refund_status='REFUND_PENDING' WHERE id='another'").run(Date.now());
+  const another:any=db.sqlite.prepare("SELECT * FROM payments WHERE id='another'").get();
+  await assert.rejects(recordManualRefund(another,refundHash,''),/UNIQUE/);
+  assert.equal(db.sqlite.prepare("SELECT refund_status FROM payments WHERE id='another'").get()!.refund_status,'REFUND_PENDING');
+});
+
 for (const [name, tamper] of [
   ['wrong sender', () => { transaction.from = other; }],
   ['wrong token', () => { transaction.to = other; }],
@@ -238,8 +285,9 @@ test('a stale verifier cannot downgrade a concurrently confirmed payment', async
   };
   const stale = verifyPayment({ id: 'claim', secret: 'secret', tx: hash });
   await waiting;
+  db.sqlite.prepare("UPDATE payments SET verification_lock_until=? WHERE id='claim'").run(Date.now()-1);
   await verifyPayment({ id: 'claim', secret: 'secret', tx: hash });
-  release(); await stale;
+  release(); await assert.rejects(stale);
   assert.equal(db.sqlite.prepare("SELECT status FROM payments WHERE id='claim'").get()!.status, 'CONFIRMED');
 });
 
@@ -339,4 +387,58 @@ test('simultaneous cancellation and confirmation cannot create a cancelled owner
  const slot:any=db.sqlite.prepare('SELECT * FROM slots WHERE id=1').get();
  if(cancelled.released){assert.equal(slot.holder_sponsorship_id,null);assert.equal(verified.refundStatus,'REFUND_PENDING');}
  else{assert.equal(slot.holder_sponsorship_id,'claim');assert.equal(verified.status,'CONFIRMED');}
+});
+
+async function seedQr(id='qr',slot=1,networkId=8453){
+ const network=PAYMENT_NETWORKS.find(item=>item.id===networkId)!;chainId=networkId;head=100+network.confirmations;
+ const amount=await allocateQrAmount(db,{chainId:networkId,token:network.tokens[0].address,treasury,priceUnits:'350000000',reservationId:id});
+ const now=Date.now();
+ db.sqlite.prepare("INSERT INTO sponsors(id,project_name,x_handle,contact_name,email,wallet_address,logo_url,created_at) VALUES(?,?,'@brand','Brand','brand@example.com',?,'logo',?)").run(id,id,wallet,now);
+ db.sqlite.prepare("INSERT INTO sponsorships(id,secret,slot_number,position,price_usd,claim_price_units,sponsor_id,reserved_until,terms_accepted,created_at,updated_at) VALUES(?,'secret',?,'Front',350,'350000000',?,?,1,?,?)").run(id,slot,id,now+300000,now-10000,now);
+ db.sqlite.prepare("INSERT INTO payments(id,sponsor_id,sponsorship_id,slot_id,wallet_address,token,token_contract,chain,chain_id,amount,amount_usd,amount_units,verification_config,created_at,payment_method) VALUES(?,?,?,?,?,'USDC',?,?,?,?,?,?,?,?,'QR')").run(id,id,id,slot,wallet,network.tokens[0].address,network.name,networkId,String(Number(amount)/1e6),Number(amount)/1e6,String(amount),JSON.stringify({...network,chainId:networkId,treasury,startBlock:99}),now-10000);
+ db.sqlite.prepare('UPDATE slots SET order_id=?,expires=? WHERE id=?').run(id,now+300000,slot);
+ transaction.to=network.tokens[0].address;receipt.to=network.tokens[0].address;receipt.logs[0].address=network.tokens[0].address;
+ transaction.input=`0xa9059cbb${treasury.slice(2).padStart(64,'0')}${amount.toString(16).padStart(64,'0')}`;receipt.logs[0].data='0x'+amount.toString(16);return amount;
+}
+test('QR discovery confirms without a hash, credits actual funds, and preserves the listed takeover price',async()=>{
+ const amount=await seedQr();assert.equal((await verifyPayment({id:'qr',secret:'secret'})).status,'CONFIRMED');
+ const publicData:any=await inventory();assert.equal(publicData.raisedUnits,String(amount));assert.equal(publicData.slots[0].currentPrice,'350');assert.equal(publicData.slots[0].claimPrice,'525');
+ await verifyPayment({id:'qr',secret:'secret'});assert.equal(db.sqlite.prepare('SELECT claim_count FROM slots WHERE id=1').get()!.claim_count,1);
+});
+test('QR wrong amounts do not acquire a slot and confirmed late or cancelled transfers refund the actual amount',async()=>{
+ const amount=await seedQr();receipt.logs[0].data='0x'+(amount-BigInt(1000)).toString(16);
+ assert.equal((await verifyPayment({id:'qr',secret:'secret'})).status,'PENDING');assert.equal(db.sqlite.prepare('SELECT holder_sponsorship_id FROM slots WHERE id=1').get()!.holder_sponsorship_id,null);
+ receipt.logs[0].data='0x'+amount.toString(16);await cancelCheckout({id:'qr',secret:'secret'});
+ assert.equal((await verifyPayment({id:'qr',secret:'secret'})).status,'LATE_CONFIRMED');const p=db.sqlite.prepare("SELECT * FROM payments WHERE id='qr'").get()!;assert.equal(p.refund_amount_units,String(amount));
+});
+test('QR transfers before reservation and payment hashes reused by a different reservation cannot confirm',async()=>{
+ await seedQr();block.timestamp='0x'+Math.floor((Date.now()-20000)/1000).toString(16);
+ await assert.rejects(()=>verifyPayment({id:'qr',secret:'secret',tx:hash}),/predates/);
+ block.timestamp='0x'+Math.floor(Date.now()/1000).toString(16);assert.equal((await verifyPayment({id:'qr',secret:'secret',tx:hash})).status,'CONFIRMED');
+ seed('other-claim',2,other);await assert.rejects(()=>verifyPayment({id:'other-claim',secret:'secret',tx:hash}));
+});
+
+for(const network of PAYMENT_NETWORKS)test(`QR automatic discovery and canonical verification on ${network.name}`,async()=>{
+ await seedQr('qr',1,network.id);assert.equal((await verifyPayment({id:'qr',secret:'secret'})).status,'CONFIRMED');
+});
+test('concurrent QR verification commits one holder and one confirmation notification',async()=>{
+ await seedQr();await Promise.all([verifyPayment({id:'qr',secret:'secret'}),verifyPayment({id:'qr',secret:'secret'})]);
+ assert.equal(db.sqlite.prepare('SELECT claim_count FROM slots WHERE id=1').get()!.claim_count,1);
+ assert.equal(db.sqlite.prepare("SELECT COUNT(*) n FROM notifications WHERE type='PAYMENT_CONFIRMED'").get()!.n,1);
+});
+
+test('outbid QR sponsor refund uses the actual discounted payment, not the listed spot price',async()=>{
+ const amount=await seedQr();await verifyPayment({id:'qr',secret:'secret'});
+ seed('takeover',1,other,8453,525,'qr');const replacement='0x'+'c'.repeat(64);
+ transaction={...transaction,hash:replacement,from:other,input:`0xa9059cbb${treasury.slice(2).padStart(64,'0')}${(525000000).toString(16).padStart(64,'0')}`};
+ receipt={...receipt,transactionHash:replacement,from:other,logs:[{...receipt.logs[0],transactionHash:replacement,topics:[transferTopic,topic(other),topic(treasury)],data:'0x'+(525000000).toString(16)}]};
+ assert.equal((await verifyPayment({id:'takeover',secret:'secret',tx:replacement})).status,'CONFIRMED');
+ assert.equal(db.sqlite.prepare("SELECT refund_amount_units FROM payments WHERE id='qr'").get()!.refund_amount_units,String(amount));
+ assert.equal((await inventory()).raisedUnits,'525000000');
+});
+test('campaign threshold and refund settlement use actual QR funds',async()=>{
+ const amount=await seedQr();await verifyPayment({id:'qr',secret:'secret'});
+ db.sqlite.prepare("UPDATE auction_campaign SET threshold_units='350000000',ends_at=? WHERE id=1").run(Date.now()-1);
+ const state:any=await inventory();assert.equal(state.auction.status,'REFUNDED');
+ assert.equal(db.sqlite.prepare("SELECT refund_amount_units FROM payments WHERE id='qr'").get()!.refund_amount_units,String(amount));
 });

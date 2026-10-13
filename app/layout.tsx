@@ -4,11 +4,11 @@ import "./globals.css";
 import "./mobile.css";
 
 export const metadata: Metadata = {
-  title: "8 Projects. 1 Devcon T-Shirt.",
+  title: "Put Your Brand on Me",
   description: "Eight projects. One T-shirt. Join Manish on his Devcon Mumbai journey.",
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: { url: "/web3manish-pfp.jpg", type: "image/jpeg" },
+    shortcut: "/web3manish-pfp.jpg",
   },
 };
 

@@ -108,6 +108,13 @@ export default function Dashboard() {
           </section>
 
           {!data.inventory.paymentsReady && <div className="admin-alert"><ShieldCheck size={21} /><div><b>Checkout is securely paused.</b><p>Add and validate the treasury wallet below. The auction cannot launch until the payment configuration passes server checks.</p></div></div>}
+          {data.monitoring && <div className="panel">
+            <div className="panel-heading"><h2>Payment monitoring</h2><button className="button" disabled={busy} onClick={()=>save('monitoring',{},'Payment check completed.')}>CHECK NOW</button></div>
+            <p>{data.monitoring.schedulerStale?'Scheduled checks are missing or stale. Connect the unattended scheduler.':'Scheduler requests are being received.'}</p>
+            <div className="record-grid"><div><span>LAST CHECK COMPLETED</span><p>{when(data.monitoring.state?.last_finished_at)}</p></div><div><span>LAST SCHEDULER REQUEST</span><p>{when(data.monitoring.state?.last_scheduled_at)}</p></div><div><span>UNRESOLVED PAYMENTS</span><p>{data.monitoring.backlog?.unresolved||0}</p></div><div><span>VERIFICATION ERRORS</span><p>{data.monitoring.backlog?.verification_failures||0}</p></div></div>
+            {data.monitoring.state?.last_error&&<p className="notice">{human(data.monitoring.state.last_error)}. Review and retry the monitor.</p>}
+            {!!data.monitoring.backlog?.legacy_locks&&<p className="notice">{data.monitoring.backlog.legacy_locks} legacy verification locks need manual review. They are not automatically cleared.</p>}
+          </div>}
           {!data.emailDeliveryReady && <div className="admin-alert"><ShieldCheck size={21} /><div><b>Email delivery is not configured.</b><p>Outbid and refund notices are still written to the durable notification queue. Add RESEND_API_KEY and SPONSOR_FROM_EMAIL to deliver them automatically.</p></div></div>}
 
           <section className="panel launch-panel">
@@ -189,7 +196,7 @@ export default function Dashboard() {
                       <button className="button" disabled={busy} onClick={() => save('review', { sponsorId: holder.sponsorId, action: 'REPLACEMENT_REQUESTED' }, 'Replacement requested.')}>REQUEST REPLACEMENT</button>
                       <button className="button" disabled={busy} onClick={() => save('review', { sponsorId: holder.sponsorId, action: 'REJECTED' }, 'Logo rejected.')}>REJECT</button>
                     </div>
-                    <form className="replacement-form" onSubmit={event => replaceLogo(event, holder.sponsorId)}><label>REPLACE LOGO<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /></label><button className="button" disabled={busy}>UPLOAD</button></form>
+                    <form className="replacement-form" onSubmit={event => replaceLogo(event, holder.sponsorId)}><label>REPLACE LOGO<input name="logo" type="file" accept="image/png,image/jpeg" required /></label><button className="button" disabled={busy}>UPLOAD</button></form>
                     <p className="small muted">Rejecting a logo only hides it. To cancel the sponsorship and release the spot, queue a full refund below.</p>
                     <button className="button" disabled={busy || slot?.checkoutInProgress || holder.refundStatus!=='NONE' || data.inventory.auction.status!=='LIVE'} onClick={() => {
                       const reason=window.prompt('Reason for cancelling this sponsorship and queuing its full refund:');
@@ -206,7 +213,7 @@ export default function Dashboard() {
             <Table>
               <TableHeader><TableRow><TableHead>Slot</TableHead><TableHead>Project</TableHead><TableHead>Claim</TableHead><TableHead>Sponsorship</TableHead><TableHead>Payment</TableHead><TableHead>Refund</TableHead><TableHead>Confirmed</TableHead></TableRow></TableHeader>
               <TableBody>{data.claims.map((claim:any)=><TableRow key={claim.sponsorshipId}>
-                <TableCell>{String(claim.slotId).padStart(2,'0')}</TableCell><TableCell>{claim.project}</TableCell><TableCell>${money(claim.claimPriceUnits)}</TableCell><TableCell>{human(claim.sponsorshipStatus)}</TableCell><TableCell>{human(claim.paymentStatus)}<br />{claim.token} · {claim.chain}</TableCell><TableCell>{human(claim.refundStatus)}</TableCell><TableCell>{when(claim.confirmedAt)}</TableCell>
+                <TableCell>{String(claim.slotId).padStart(2,'0')}</TableCell><TableCell>{claim.project}</TableCell><TableCell>${money(claim.claimPriceUnits)}</TableCell><TableCell>{human(claim.sponsorshipStatus)}</TableCell><TableCell>{human(claim.paymentStatus)}<br />{claim.token} · {claim.chain}{claim.verificationError&&<p className="notice">{human(claim.verificationError)}<br />Retry: {when(claim.verificationNextAt)} · attempts: {claim.verificationAttempts}</p>}</TableCell><TableCell>{human(claim.refundStatus)}</TableCell><TableCell>{when(claim.confirmedAt)}</TableCell>
               </TableRow>)}</TableBody>
             </Table>
             {data.claims.filter((claim:any)=>claim.refundStatus&&claim.refundStatus!=='NONE').map((claim:any)=><form className="refund-workflow" key={`refund-${claim.paymentId}`} onSubmit={event=>{
@@ -215,7 +222,7 @@ export default function Dashboard() {
               const status=String(form.get('status'));
               const refundTx=String(form.get('refundTx')||'').trim();
               const note=String(form.get('note')||'').trim();
-              const question=status==='REFUNDED'?'Confirm that this refund transaction is final and on-chain?':'Update this refund state?';
+              const question=status==='REFUNDED'?'Mark this refund complete based on your manual confirmation? The website will not verify the transaction on-chain.':'Update this refund state?';
               if(window.confirm(question))save('refund',{paymentId:claim.paymentId,status,refundTx,note},`Refund status changed to ${human(status)}.`);
             }}>
               <div><span className="mono">SLOT {String(claim.slotId).padStart(2,'0')} · {claim.project}</span><p>${money(claim.refundAmountUnits||claim.claimPriceUnits)} {claim.token} on {claim.chain} · {human(claim.refundStatus)}</p></div>

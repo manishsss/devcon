@@ -3,7 +3,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, ShieldCheck, Wallet, X } from 'lucide-react';
-import { PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-networks';
+import { PAYMENT_NETWORKS, QR_PAYMENT_NETWORKS, TREASURY_WALLET_ADDRESS } from '@/lib/payment-networks';
 import { stringToHex } from 'viem';
 import { discoverWallets, mobileWalletLinks, walletCheckoutUrl, type WalletOption, type WalletProvider } from '@/lib/wallet-discovery';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -23,6 +23,8 @@ type Slot = {
 type Reservation = {
   id: string;
   secret: string;
+  paymentMethod?: string;
+  claimPrice?: string;
   reservedUntil: number;
   price: string;
   priceUnits: string;
@@ -52,6 +54,7 @@ type Verification = {
   position?: string;
   price?: string;
   priceUnits?: string;
+  paidAmount?: string;
   refundStatus?: string;
   claimStatus?: string;
   token?: string;
@@ -65,6 +68,7 @@ type Props = {
   open: boolean;
   slot: Slot | null;
   paymentsReady: boolean;
+  qrPaymentsReady?: boolean;
   claimsOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirmed: () => void;
@@ -82,11 +86,17 @@ const statusLabel = (status: string) => ({
   CANCELLED: 'RESERVATION CANCELLED',
 }[status] || status.replaceAll('_', ' '));
 
-export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsOpen, onOpenChange, onConfirmed }: Props) {
+export default function SponsorshipCheckout({ open, slot, paymentsReady, qrPaymentsReady=false, claimsOpen, onOpenChange, onConfirmed }: Props) {
   const [chainId,setChainId]=useState(8453);
   const [selectedToken,setSelectedToken]=useState('USDC');
+  const [paymentMethod,setPaymentMethod]=useState<'WALLET'|'QR'>('WALLET');
+
   const network=PAYMENT_NETWORKS.find(item=>item.id===chainId)!;
   const [reservation, setReservation] = useState<Reservation | null>(null);
+  const selectableNetworks=paymentMethod==='QR'?QR_PAYMENT_NETWORKS:PAYMENT_NETWORKS;
+  useEffect(()=>{
+    if(!reservation&&paymentMethod==='QR'&&!QR_PAYMENT_NETWORKS.some(item=>item.id===chainId))setChainId(8453);
+  },[paymentMethod,chainId,reservation]);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [busy, setBusy] = useState(false);
   const [tx, setTx] = useState('');
@@ -258,15 +268,15 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
     const payload = new FormData(form);
     const logo = payload.get('logo') as File;
     if (!logo?.size) {
-      setError('Upload a PNG, JPG or static SVG logo.');
+      setError('Upload a PNG or JPG logo.');
       return;
     }
     if (logo.size > 5 * 1024 * 1024) {
       setError('Logo must be under 5 MB.');
       return;
     }
-    if (!['image/png', 'image/jpeg', 'image/svg+xml'].includes(logo.type)) {
-      setError('Use a PNG, JPG or static SVG logo.');
+    if (!['image/png', 'image/jpeg'].includes(logo.type)) {
+      setError('Use a PNG or JPG logo.');
       return;
     }
     setBusy(true);
@@ -276,6 +286,8 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       payload.set('slot', String(slot.id));
       payload.set('chainId',String(chainId));
       payload.set('token',selectedToken);
+      payload.set('paymentMethod',paymentMethod);
+      if(paymentMethod!=='QR'){
       const ethereum=requireProvider();
       const accounts=await ethereum.request({method:'eth_requestAccounts'});
       if(String(accounts?.[0]||'').toLowerCase()!==String(payload.get('wallet')).toLowerCase())throw new Error('Connect the payment wallet entered in your details.');
@@ -285,6 +297,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
       const signature=await ethereum.request({method:'personal_sign',params:[stringToHex(challenge.message),accounts[0]]});
       payload.set('authorization',challenge.id);
       payload.set('signature',signature);
+      }
       const response = await fetch('/api/reserve', { method: 'POST', body: payload });
       const result: any = await response.json();
       if (!response.ok) throw new Error(result.error || 'The reservation could not be created.');
@@ -435,8 +448,9 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
 
             {!reservation ? (
               <form onSubmit={reserve} className="sponsor-form">
+                {qrPaymentsReady && <div className="checkout-methods" role="group" aria-label="Payment method"><button type="button" aria-pressed={paymentMethod==='WALLET'} onClick={()=>setPaymentMethod('WALLET')}>Pay with wallet</button><button type="button" aria-pressed={paymentMethod==='QR'} onClick={()=>setPaymentMethod('QR')}>Pay by QR</button></div>}
                 <div className="form-grid">
-                  <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{PAYMENT_NETWORKS.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+                  <label>PAYMENT NETWORK<select value={chainId} onChange={event=>{setChainId(Number(event.target.value));setSelectedToken('USDC');}}>{selectableNetworks.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
                   <label>PAYMENT TOKEN<select value={selectedToken} onChange={event=>setSelectedToken(event.target.value)}>{network.tokens.map(item=><option key={item.symbol} value={item.symbol}>{item.label}</option>)}</select></label>
                   <p className="field-note full">{network.tokens.length===1?'USDC only on this network. ':''}Gas is paid in {network.gas}. Refunds return the same token on the original payment network.</p>
                   <label>PROJECT NAME *<input name="project" placeholder="Example Protocol" required maxLength={120} autoComplete="organization" enterKeyHint="next" /></label>
@@ -444,13 +458,13 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <label className="full">PROJECT WEBSITE <span>OPTIONAL</span><input name="website" type="url" inputMode="url" placeholder="https://example.com" maxLength={300} autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                   <label>CONTACT NAME *<input name="contact" placeholder="John" required maxLength={120} autoComplete="name" enterKeyHint="next" /></label>
                   <label>EMAIL *<input name="email" type="email" inputMode="email" placeholder="john@example.com" required maxLength={254} autoComplete="email" autoCapitalize="none" spellCheck={false} enterKeyHint="next" /></label>
-                  <label className="full">WALLET ADDRESS *<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
+                  <label className="full">{paymentMethod==='QR'?'SENDING WALLET ADDRESS *':'WALLET ADDRESS *'}<input name="wallet" value={wallet} onChange={(event) => setWallet(event.target.value)} placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" required maxLength={42} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} enterKeyHint="next" /></label>
                 </div>
-                <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>
-                <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg,image/svg+xml" required /><span>PNG, JPG or static SVG · max 5 MB · high-resolution transparent artwork preferred.</span></label>
+                {paymentMethod!=='QR' && <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>}
+                <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg" required /><span>PNG or JPG · max 5 MB · max 2048px per side / 1 megapixel.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
                 <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I agree to the <a href="/terms" target="_blank" rel="noopener noreferrer">Terms &amp; Conditions</a> and understand the sponsorship rules.</span></label>
-                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? 'AUTHORIZE IN YOUR WALLET…' : 'SIGN & CONTINUE TO PAYMENT'}</button>
+                <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? (paymentMethod==='QR'?'CREATING PAYMENT…':'AUTHORIZE IN YOUR WALLET…') : paymentMethod==='QR'?'CONTINUE TO QR PAYMENT':'SIGN & CONTINUE TO PAYMENT'}</button>
               </form>
             ) : (
               <div className="payment-step">
@@ -463,13 +477,20 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, claimsO
                   <span className="network-mark">{reservation.chainName.toUpperCase()}</span>
                 </div>
 
+                {reservation.paymentMethod==='QR' ? <div className="qr-payment">
+                  {remaining>0 && !tx && <><img src="/treasury-qr.png" width="1080" height="817" alt="Scan the receiving wallet address" />
+                  <strong>{reservation.price} USDC</strong><p>Keep this checkout open until your payment is confirmed.</p><p>Send this exact amount from the sending wallet you entered. Do not round it or use “send max”. Keep extra {reservation.gas} for gas.</p>
+                  <button type="button" className="button secondary" onClick={()=>void copy(reservation.price,'amount')}>{copied==='amount'?'COPIED':'COPY EXACT AMOUNT'}</button>
+                  <code>{reservation.treasury}</code><button type="button" className="button secondary" onClick={()=>void copy(reservation.treasury,'address')}>{copied==='address'?'COPIED':'COPY RECEIVING ADDRESS'}</button>
+                  <p>This QR fills the receiving address only. Select {reservation.chainName}, choose {reservation.token}, and enter exactly {reservation.price}. Wrong amounts require <a href="https://t.me/manishweb3" target="_blank" rel="noopener noreferrer">manual assistance</a>.</p></>}
+                </div> : <>
                 <button className="button wallet-button" type="button" onClick={connectWallet}>
                   <Wallet size={17} /> {wallet ? `${connected ? 'CONNECTED' : 'WRONG WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET'}
                 </button>
                 {wallet && <div className="wallet-state"><span>Connected wallet</span><code>{wallet}</code></div>}
                 <button className="button primary checkout-primary" type="button" onClick={payWithWallet} disabled={remaining<60 || busy || paying || Boolean(tx) || status==='FAILED'}>
                   {paying ? 'CONFIRM IN YOUR WALLET…' : tx ? 'PAYMENT SENT · VERIFYING' : `PAY $${reservation.price} ${reservation.token}`}
-                </button>
+                </button></>}
 
                 <div className={`payment-status ${['PAYMENT_DETECTED', 'CONFIRMING'].includes(visibleStatus) ? 'is-live' : ''}`} aria-live="polite">
                   <span className="status-dot" />
@@ -533,7 +554,7 @@ function LatePayment({ reservation, verification, tx, explorerUrl, onClose }: { 
       <DialogDescription>The exact payment was confirmed outside the active claim window.</DialogDescription>
       <dl className="success-grid">
         <div><dt>SPOT</dt><dd>Slot {String(verification.slot || '').padStart(2, '0')}</dd></div>
-        <div><dt>PAYMENT</dt><dd>${verification.price || reservation.price} {verification.token || reservation.token}</dd></div>
+        <div><dt>PAYMENT</dt><dd>${verification.paidAmount || reservation.price} {verification.token || reservation.token}</dd></div>
         <div><dt>CLAIM STATUS</dt><dd>NOT APPLIED</dd></div>
         <div><dt>REFUND STATUS</dt><dd>{verification.refundStatus || 'REFUND_PENDING'}</dd></div>
         <div className="wide"><dt>TRANSACTION</dt><dd>{truncate(verification.transactionHash || tx, 10, 8)}</dd></div>

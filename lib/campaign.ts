@@ -2,6 +2,8 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import { readRpc } from './read-rpc';
+import { fencedDatabase } from './verification-scope';
+import { consumeBudget } from './abuse';
 import { PAYMENT_NETWORKS } from './payment-networks';
 import { TREASURY_WALLET_ADDRESS } from './payment-networks';
 import { campaignResultEmail, emailTypeEnabled, sendTransactionalEmail } from './sponsor-email';
@@ -34,7 +36,7 @@ export const defaults={
 };
 export const positions=['Front · Upper Left','Front · Upper Right','Front · Lower Left','Front · Lower Right','Back · Upper Left','Back · Upper Right','Back · Lower Left','Back · Lower Right'];
 
-export function db(){if(!(env as any).DB)throw new Error('Sponsorship inventory is temporarily unavailable. Please try again.');return (env as any).DB;}
+export function db(){if(!(env as any).DB)throw new Error('Sponsorship inventory is temporarily unavailable. Please try again.');return fencedDatabase((env as any).DB);}
 
 export async function config(){
   const row:any=await db().prepare('SELECT value FROM settings WHERE id=1').first();
@@ -55,7 +57,7 @@ export async function config(){
   };
 }
 
-export function ready(c:any){return typeof c.treasury==='string'&&c.treasury.toLowerCase()===TREASURY_WALLET_ADDRESS;}
+export function ready(c:any){return (env as any).PAYMENTS_DISABLED!=='1'&&typeof c.treasury==='string'&&c.treasury.toLowerCase()===TREASURY_WALLET_ADDRESS;}
 
 export async function admin(){
   const user=await getChatGPTUser();
@@ -126,7 +128,7 @@ export async function dispatchNotification(id:string){
 }
 
 async function campaignResultNotificationStatements(successful:boolean,now:number){
-  const {results}=await db().prepare(`SELECT sp.id AS sponsorship_id,sp.slot_number,sp.claim_price_units,
+  const {results}=await db().prepare(`SELECT sp.id AS sponsorship_id,sp.slot_number,p.amount_units,sp.claim_price_units,
     s.id AS sponsor_id,s.project_name,s.email,p.id AS payment_id,p.token,p.chain
     FROM slots sl
     JOIN sponsorships sp ON sp.id=sl.holder_sponsorship_id
@@ -135,7 +137,7 @@ async function campaignResultNotificationStatements(successful:boolean,now:numbe
     WHERE p.status='CONFIRMED'`).all();
   return (results as any[]).map(row=>{
     const id=`campaign-${successful?'success':'refund'}:${row.sponsorship_id}`;
-    const copy=campaignResultEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.claim_price_units,successful});
+    const copy=campaignResultEmail({project:row.project_name,slot:row.slot_number,amountUnits:row.amount_units,successful});
     return db().prepare(`INSERT OR IGNORE INTO notifications
       (id,sponsor_id,sponsorship_id,payment_id,type,recipient,subject,body,status,created_at)
       SELECT ?,?,?,?,?,?,?,?,'PENDING',?
@@ -160,8 +162,8 @@ export async function settleCampaign(now=Date.now()){
   }
   if(current?.status==='CLOSED'&&!current.finalized_at){
     const totals:any=await db().prepare(`SELECT COUNT(*) AS holder_count,
-      COALESCE(SUM(CAST(current_price_units AS INTEGER)),0) AS total_units
-      FROM slots WHERE holder_sponsorship_id IS NOT NULL`).first();
+      COALESCE(SUM(CAST(p.amount_units AS INTEGER)),0) AS total_units
+      FROM slots sl JOIN payments p ON p.sponsorship_id=sl.holder_sponsorship_id WHERE p.status='CONFIRMED'`).first();
     const totalUnits=BigInt(String(totals?.total_units||0));
     const successful=totalUnits>=BigInt(current.threshold_units);
     const finalStatus=successful?'SUCCESSFUL':'REFUNDED';
@@ -189,22 +191,22 @@ export async function settleCampaign(now=Date.now()){
 export async function inventory(){
   await initialize();
   const now=Date.now();
-  const c=await config();
-  const campaignRow:any=await settleCampaign(now) || await db().prepare('SELECT * FROM auction_campaign WHERE id=1').first();
+  const [c,settled]=await Promise.all([config(),settleCampaign(now)]);
+  const campaignRow:any=settled || await db().prepare('SELECT * FROM auction_campaign WHERE id=1').first();
   const state=effectiveAuctionStatus(campaignRow.status as AuctionStatus,campaignRow.ends_at,now);
-  const {results}=await db().prepare(`SELECT
+  const [{results},historyRows]=await Promise.all([db().prepare(`SELECT
     sl.id,sl.price,sl.disabled,sl.order_id,sl.expires,sl.current_price_units,sl.holder_sponsorship_id,sl.claim_count,
     hs.status AS holder_status,s.project_name,s.logo_url,s.logo_status,s.x_handle,s.website,
-    hp.status AS holder_payment_status,hp.refund_status
+    hp.status AS holder_payment_status,hp.refund_status,hp.amount_units AS holder_amount_units
     FROM slots sl
     LEFT JOIN sponsorships hs ON hs.id=sl.holder_sponsorship_id
     LEFT JOIN sponsors s ON s.id=hs.sponsor_id
     LEFT JOIN payments hp ON hp.sponsorship_id=hs.id
-    ORDER BY sl.id`).all();
-  const historyRows=await db().prepare(`SELECT sp.slot_number,sp.claim_price_units
+    ORDER BY sl.id`).all(),
+  db().prepare(`SELECT sp.slot_number,sp.claim_price_units
     FROM sponsorships sp JOIN payments p ON p.sponsorship_id=sp.id
     WHERE p.status='CONFIRMED' AND sp.claim_sequence IS NOT NULL
-    ORDER BY sp.slot_number,sp.claim_sequence`).all();
+    ORDER BY sp.slot_number,sp.claim_sequence`).all()]);
   const histories=new Map<number,string[]>();
   for(const row of historyRows.results as any[]){
     const values=histories.get(row.slot_number)||[];
@@ -227,6 +229,7 @@ export async function inventory(){
       startingPriceUnits:initialUnits.toString(),
       startingPrice:displayUnits(initialUnits),
       currentPriceUnits:currentUnits?.toString()||null,
+      paidUnits:row.holder_amount_units||'0',
       currentPrice:currentUnits===null?null:displayUnits(currentUnits),
       claimPriceUnits:nextUnits.toString(),
       claimPrice:displayUnits(nextUnits),
@@ -242,12 +245,13 @@ export async function inventory(){
       refundStatus:held?row.refund_status:null,
     };
   });
-  const raisedUnits=slots.reduce((total:bigint,slot:any)=>total+BigInt(slot.currentPriceUnits||0),BigInt(0));
+  const raisedUnits=slots.reduce((total:bigint,slot:any)=>total+BigInt(slot.paidUnits||0),BigInt(0));
   const count=slots.filter((slot:any)=>slot.holder).length;
   const targetUnits=BigInt(campaignRow.target_units);
   const thresholdUnits=BigInt(campaignRow.threshold_units);
   return {
     slots,
+    qrPaymentsReady:(env as any).QR_CHECKOUT_ENABLED==='1',
     raised:Number(raisedUnits)/1_000_000,
     raisedUnits:raisedUnits.toString(),
     raisedDisplay:displayUnits(raisedUnits),
@@ -277,7 +281,10 @@ export async function inventory(){
 }
 
 export async function rpc(c:any,method:string,params:any[]){
-  return readRpc(c,method,params) as Promise<any>;
+  return readRpc(c,method,params,async()=>{
+    await consumeBudget((env as any).DB,'rpc:global',1800);
+    await consumeBudget((env as any).DB,`rpc:chain:${Number(c.chainId)}`,900);
+  }) as Promise<any>;
 }
 
 export function validateConfig(c:any){

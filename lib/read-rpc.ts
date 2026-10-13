@@ -10,7 +10,8 @@ export const RPC_ALTERNATES: Record<number, string[]> = {
 };
 const READ_METHODS = new Set(['eth_chainId','eth_call','eth_blockNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByNumber','eth_getLogs']);
 
-async function request(endpoint: string, method: string, params: unknown[]) {
+async function request(endpoint: string, method: string, params: unknown[],budget?:()=>Promise<void>) {
+  if(budget)await budget();
   const response = await fetch(endpoint, {
     method:'POST', headers:{'content-type':'application/json'},
     body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}), signal:AbortSignal.timeout(4000),
@@ -23,7 +24,7 @@ async function request(endpoint: string, method: string, params: unknown[]) {
   return body.result;
 }
 
-export async function readRpc(config: {rpc:string;chainId?:number}, method:string, params:unknown[]) {
+export async function readRpc(config: {rpc:string;chainId?:number}, method:string, params:unknown[],budget?:()=>Promise<void>) {
   if (!READ_METHODS.has(method)) throw new Error('Only payment verification reads are allowed.');
   const expected = Number(config.chainId);
   const network = PAYMENT_NETWORKS.find(item=>item.id===expected);
@@ -31,11 +32,12 @@ export async function readRpc(config: {rpc:string;chainId?:number}, method:strin
   for (const [index,endpoint] of endpoints.entries()) {
     try {
       // Every alternate must identify as the originally selected chain.
-      if (index>0 && Number(await request(endpoint,'eth_chainId',[]))!==expected) throw new Error('Wrong RPC chain');
-      const result = await request(endpoint,method,params);
+      if (index>0 && Number(await request(endpoint,'eth_chainId',[],budget))!==expected) throw new Error('Wrong RPC chain');
+      const result = await request(endpoint,method,params,budget);
       if (method==='eth_chainId' && network && Number(result)!==expected) throw new Error('Wrong RPC chain');
       return result;
     } catch (error) {
+      if((error as any)?.status===429)throw error;
       // No wallet, parameters, payment hash, credentials or endpoint query in logs.
       let host='invalid';try {host=new URL(endpoint).hostname;}catch{}
       const raw=error instanceof Error?error.message:'';

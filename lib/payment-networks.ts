@@ -14,6 +14,8 @@ export const PAYMENT_NETWORKS:PaymentNetwork[]=[
   {id:5042,name:'Arc',rpc:'https://rpc.drpc.mainnet.arc.io',explorer:'https://explorer.arc.io/tx/',gas:'USDC',confirmations:12,tokens:[token('USDC','0x3600000000000000000000000000000000000000')]},
 ];
 
+export const QR_PAYMENT_NETWORKS = PAYMENT_NETWORKS.filter(network => network.id !== 5042);
+
 export function paymentRail(chainId:unknown,symbol:unknown){
   const network=PAYMENT_NETWORKS.find(item=>item.id===Number(chainId));
   const asset=network?.tokens.find(item=>item.symbol===symbol);

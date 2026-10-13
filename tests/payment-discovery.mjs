@@ -14,7 +14,7 @@ const rpc=async(_,method,params)=>{
  assert.equal(method,'eth_getLogs');
  assert.deepEqual(params[0].topics,[topic,'0x'+wallet.slice(2).padStart(64,'0'),'0x'+treasury.slice(2).padStart(64,'0')]);
  assert.equal(params[0].address,token);
- assert.equal(params[0].fromBlock,'0x64');
+ assert.equal(params[0].fromBlock,'0x65');
  return logs;
 };
 const discover=new Function('db','rpc','TRANSFER_TOPIC',js+';return discoverPayment;')(db,rpc,topic);
@@ -23,6 +23,6 @@ assert.equal(await discover(row),hash,'exact candidate is discovered without a p
 logs=[{transactionHash:hash,data:'0x1'}];assert.equal(await discover(row),'','wrong amount ignored');
 logs=[{transactionHash:hash,data:'0x14dc9380',removed:true}];assert.equal(await discover(row),'','removed logs ignored');
 logs=[{transactionHash:hash,data:'0x14dc9380'}];used={id:'previous'};assert.equal(await discover(row),'','previously used transaction ignored');
-used=null;logs=[];assert.equal(await discover(row),'');assert.equal(cursor,100,'tip replay protects against short reorgs');
+used=null;logs=[];assert.equal(await discover(row),'');assert.equal(cursor,101,'tip replay protects against short reorgs');
 chain=1;await assert.rejects(()=>discover(row),/different chain/);
 console.log('7 automatic payment discovery checks passed.');

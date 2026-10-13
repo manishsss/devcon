@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 export const checkoutAuthorizations=sqliteTable('checkout_authorizations',{
   id:text('id').primaryKey(),
   walletAddress:text('wallet_address').notNull(),
@@ -19,6 +19,12 @@ export const slots=sqliteTable('slots',{
 },t=>[index('idx_slots_holder').on(t.holderSponsorshipId)]);
 export const orders=sqliteTable('orders',{id:text('id').primaryKey(),secret:text('secret').notNull(),slot:integer('slot').notNull(),price:integer('price').notNull(),project:text('project').notNull(),contact:text('contact').notNull(),x:text('x').notNull(),email:text('email').notNull(),website:text('website').notNull(),wallet:text('wallet').notNull(),logo:text('logo'),approved:integer('approved').notNull().default(0),review:text('review').notNull().default('Pending review'),status:text('status').notNull().default('Awaiting payment'),tx:text('tx').unique(),config:text('config').notNull(),created:integer('created').notNull(),expires:integer('expires').notNull(),audit:text('audit')});
 export const settings=sqliteTable('settings',{id:integer('id').primaryKey(),value:text('value').notNull()});
+export const paymentMonitorState=sqliteTable('payment_monitor_state',{
+  id:integer('id').primaryKey(),
+  lastStartedAt:integer('last_started_at'),lastFinishedAt:integer('last_finished_at'),lastScheduledAt:integer('last_scheduled_at'),
+  lastSource:text('last_source'),processed:integer('processed').notNull().default(0),failed:integer('failed').notNull().default(0),
+  lastError:text('last_error'),lockToken:text('lock_token'),lockUntil:integer('lock_until'),
+});
 export const sponsors=sqliteTable('sponsors',{
   id:text('id').primaryKey(),
   projectName:text('project_name').notNull(),
@@ -66,6 +72,7 @@ export const payments=sqliteTable('payments',{
   status:text('status').notNull().default('PENDING'),
   confirmations:integer('confirmations').notNull().default(0),
   verificationConfig:text('verification_config').notNull(),
+  paymentMethod:text('payment_method').notNull().default('WALLET'),
   createdAt:integer('created_at').notNull(),
   confirmedAt:integer('confirmed_at'),
   refundNote:text('refund_note'),
@@ -104,3 +111,8 @@ export const notifications=sqliteTable('notifications',{
   createdAt:integer('created_at').notNull(),
   sentAt:integer('sent_at'),
 },t=>[index('idx_notifications_status').on(t.status),uniqueIndex('notifications_type_sponsorship_unique').on(t.type,t.sponsorshipId)]);
+
+export const qrPaymentAmounts=sqliteTable('qr_payment_amounts',{
+ chainId:integer('chain_id').notNull(),tokenContract:text('token_contract').notNull(),treasury:text('treasury').notNull(),
+ amountUnits:text('amount_units').notNull(),reservationId:text('reservation_id').notNull().unique(),allocatedAt:integer('allocated_at').notNull(),
+},t=>[primaryKey({columns:[t.chainId,t.tokenContract,t.treasury,t.amountUnits]})]);

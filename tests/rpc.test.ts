@@ -5,6 +5,11 @@ import { PAYMENT_NETWORKS } from '../lib/payment-networks';
 const originalFetch=globalThis.fetch;
 afterEach(()=>{globalThis.fetch=originalFetch;});
 const response=(result:unknown)=>Response.json({jsonrpc:'2.0',id:1,result});
+test('a rate-limited RPC budget stops before network access and does not try alternate providers',async()=>{
+ let calls=0;globalThis.fetch=async()=>{calls++;return response('0x6');};
+ await assert.rejects(readRpc({rpc:RPC_ALTERNATES[8453][0],chainId:8453},'eth_call',[],async()=>{throw Object.assign(new Error('Request limit reached.'),{status:429});}),(error:any)=>error.status===429);
+ assert.equal(calls,0);
+});
 for(const network of PAYMENT_NETWORKS)test(`${network.name}: failed primary falls back to a chain-verified provider without changing call parameters`,async()=>{
  const calls:{url:string;method:string;params:unknown[]}[]=[];
  const params=[{to:network.tokens[0].address,data:'0x313ce567'},'latest'];

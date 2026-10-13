@@ -1,4 +1,6 @@
 import { beforeEach, afterEach, test } from 'node:test';
+import { PNG } from 'pngjs';
+import { encode as encodeJpeg } from 'jpeg-js';
 import assert from 'node:assert/strict';
 import { privateKeyToAccount } from 'viem/accounts';
 import { env } from './runtime.mjs';
@@ -31,7 +33,7 @@ afterEach(() => { globalThis.fetch = originalFetch; db.sqlite.close(); });
 function form(slot = '1') {
   const body = new FormData();
   for (const [key, value] of Object.entries({ slot, chainId: '8453', token: 'USDC', project: 'Test Brand', x: '@testbrand', website: 'https://example.com', contact: 'Test', email: 'test@example.com', wallet: account.address, terms: 'accepted' })) body.set(key, value);
-  body.set('logo', new File([new Uint8Array([137,80,78,71,13,10,26,10])], 'logo.png', { type: 'image/png' }));
+  body.set('logo', new File([new Uint8Array(PNG.sync.write(new PNG({width:1,height:1})))], 'logo.png', { type: 'image/png' }));
   return body;
 }
 async function post(endpoint: string, body: FormData) {
@@ -50,6 +52,48 @@ test('a public wallet address alone cannot reserve or redirect another payer’s
   const response = await post('reserve', form());
   assert.equal(response.status, 400);
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM sponsorships').get()!.count, 0);
+});
+
+test('the live authorization route rejects all SVG, fake PNG headers and oversized dimensions before creating a challenge or uploading',async()=>{
+  const huge=new PNG({width:2049,height:1});
+  for(const logo of [new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'],'plain.svg',{type:'image/svg+xml'}),new File([new Uint8Array([137,80,78,71,13,10,26,10])],'fake.png',{type:'image/png'}),new File([new Uint8Array(PNG.sync.write(huge))],'huge.png',{type:'image/png'})]){
+    const body=form();body.set('logo',logo);assert.equal((await post('checkout/authorize',body)).status,400);
+  }
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM checkout_authorizations').get()!.n,0);assert.equal(uploads.size,0);
+});
+
+test('the live reserve route decodes a genuine JPEG and stores only a freshly encoded PNG',async()=>{
+  const body=form(),jpeg=encodeJpeg({width:1,height:1,data:Buffer.from([0,0,0,255])},90).data;
+  body.set('logo',new File([new Uint8Array(jpeg)],'logo.jpg',{type:'image/jpeg'}));
+  await authorize(body);assert.equal((await post('reserve',body)).status,200);
+  const bytes=[...uploads.values()][0];assert.ok(Buffer.from(bytes).subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])));
+  assert.equal(PNG.sync.read(Buffer.from(bytes)).width,1);
+});
+
+test('authorization rate limits return 429 before more decoding, RPC or challenge creation',async()=>{
+  for(let i=0;i<6;i++)assert.equal((await post('checkout/authorize',form())).status,200);
+  const before=db.sqlite.prepare('SELECT COUNT(*) n FROM checkout_authorizations').get()!.n;
+  const response=await post('checkout/authorize',form());assert.equal(response.status,429);assert.equal(response.headers.get('retry-after'),'60');
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM checkout_authorizations').get()!.n,before);assert.equal(uploads.size,0);
+});
+
+test('streamed verification requests exceeding the JSON limit return 413 without changing financial records',async()=>{
+  const before=db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n;
+  const request=new Request('https://site.test/api/verify',{method:'POST',headers:{origin:'https://site.test','content-type':'application/json'},body:JSON.stringify({padding:'x'.repeat(20000)})});
+  const response=await POST(request,{params:Promise.resolve({path:['verify']})});assert.equal(response.status,413);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,before);
+});
+
+test('the live global authorization cap remains effective across rotating client IP headers',async()=>{
+  const clock=Date.now,now=clock();Date.now=()=>now;
+  try{
+    for(let i=0;i<49;i++){
+      const body=form('0');
+      const response=await POST(new Request('https://site.test/api/checkout/authorize',{method:'POST',headers:{origin:'https://site.test','cf-connecting-ip':`203.0.113.${i}`},body}),{params:Promise.resolve({path:['checkout','authorize']})});
+      assert.equal(response.status,i<48?400:429);
+    }
+    assert.equal(uploads.size,0);assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,0);
+  }finally{Date.now=clock;}
 });
 
 test('a signed checkout reserves exactly its quoted amount and Manish’s wallet', async () => {
@@ -215,4 +259,60 @@ test('cancelling an expired unpaid checkout also releases its payer intent witho
  assert.equal(db.sqlite.prepare('SELECT status FROM payments').get()!.status,'EXPIRED');
  assert.equal((await (await cancelReservation(reserved.id,reserved.secret)).json() as any).released,true);
  const next=form();await authorize(next);assert.equal((await post('reserve',next)).status,200);
+});
+
+
+test('QR checkout is disabled by default and unsigned wallet checkout remains rejected',async()=>{
+  const body=form();body.set('paymentMethod','QR');
+  assert.equal((await post('reserve',body)).status,409);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,0);
+});
+
+test('Arc is rejected for QR reservations and remains supported for signed wallet checkout',async()=>{
+  (env as any).QR_CHECKOUT_ENABLED='1';
+  try{
+    const qr=form();qr.set('chainId','5042');qr.set('paymentMethod','QR');
+    const rejected=await post('reserve',qr);
+    assert.equal(rejected.status,400);assert.match(((await rejected.json()) as {error:string}).error,/connected-wallet/);
+    assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM qr_payment_amounts').get()!.n,0);
+    const rpcFetch=globalThis.fetch;
+    globalThis.fetch=async(input,init)=>{
+      if(JSON.parse(String(init?.body)).method==='eth_chainId')return Response.json({jsonrpc:'2.0',id:1,result:'0x13b2'});
+      return rpcFetch(input,init);
+    };
+    const wallet=form();wallet.set('chainId','5042');
+    await authorize(wallet);
+    const response=await post('reserve',wallet);assert.equal(response.status,200);
+    assert.equal(((await response.json()) as {chainId:number}).chainId,5042);
+    assert.equal(db.sqlite.prepare('SELECT payment_method FROM payments').get()!.payment_method,'WALLET');
+  }finally{delete (env as any).QR_CHECKOUT_ENABLED;}
+});
+test('QR reserves an exact discounted amount without a signature; client prices are ignored',async()=>{
+  (env as any).QR_CHECKOUT_ENABLED='1';
+  try{
+    const body=form();body.set('paymentMethod','QR');body.set('amount','1');body.set('price','1');
+    const response=await post('reserve',body);assert.equal(response.status,200);
+    const result:any=await response.json();assert.equal(result.paymentMethod,'QR');assert.equal(result.price,'349.999');assert.equal(result.claimPrice,'350');assert.equal(result.priceUnits,'349999000');
+    const payment=db.sqlite.prepare('SELECT * FROM payments').get()!;assert.equal(payment.amount_units,'349999000');assert.equal(payment.payment_method,'QR');
+    assert.equal(db.sqlite.prepare('SELECT claim_price_units FROM sponsorships').get()!.claim_price_units,'350000000');
+    const cancel=await POST(new Request('https://site.test/api/checkout/cancel',{method:'POST',headers:{origin:'https://site.test','content-type':'application/json'},body:JSON.stringify(result)}),{params:Promise.resolve({path:['checkout','cancel']})});assert.equal(cancel.status,200);
+    const retry=form();retry.set('paymentMethod','QR');const next:any=await (await post('reserve',retry)).json();assert.equal(next.price,'349.998');
+  }finally{delete (env as any).QR_CHECKOUT_ENABLED;}
+});
+test('concurrent QR reservations cannot acquire the same spot or amount',async()=>{
+ (env as any).QR_CHECKOUT_ENABLED='1';try{
+  const a=form(),b=form();a.set('paymentMethod','QR');b.set('paymentMethod','QR');b.set('wallet',attacker.address);
+  const responses=await Promise.all([post('reserve',a),post('reserve',b)]);
+  assert.deepEqual(responses.map(x=>x.status).sort(),[200,409]);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,1);
+  const values=db.sqlite.prepare('SELECT amount_units FROM qr_payment_amounts').all();assert.equal(new Set(values.map(x=>x.amount_units)).size,values.length);
+ }finally{delete (env as any).QR_CHECKOUT_ENABLED;}
+});
+
+test('payment-disabled staging cannot create wallet or QR reservations',async()=>{
+ (env as any).PAYMENTS_DISABLED='1';(env as any).QR_CHECKOUT_ENABLED='1';try{
+  const body=form();body.set('paymentMethod','QR');assert.equal((await post('reserve',body)).status,503);
+  assert.equal((await post('checkout/authorize',form())).status,503);
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,0);
+ }finally{delete (env as any).PAYMENTS_DISABLED;delete (env as any).QR_CHECKOUT_ENABLED;}
 });

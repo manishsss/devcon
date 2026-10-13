@@ -63,7 +63,7 @@ export default function ContentLogoPolicyPage() {
           <p>For questions about this policy or to report potentially infringing content, contact me through <a href="https://x.com/web3manish" target="_blank" rel="noreferrer">@web3manish on X</a>.</p>
         </section>
       </article>
-      <footer className="wrap"><div className="footer-contact">DMs open: <a href="https://t.me/manishweb3" target="_blank" rel="noreferrer">Manish</a></div><div className="footer-legal"><a href="/terms">Terms</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div><a href="/">Back to campaign</a></footer>
+      <footer className="wrap"><div className="footer-contact">DMs open: <a href="https://t.me/manishweb3" target="_blank" rel="noreferrer">Manish</a></div><div className="footer-legal"><a href="/terms">Terms</a><a href="/refund-policy">Refund Policy</a><a href="/content-logo-policy">Content &amp; Logo Policy</a></div><a href="/">Back to campaign</a></footer>
     </main>
   );
 }

@@ -27,12 +27,12 @@ Manish`,
   };
 }
 
-export function refundConfirmedEmail(input: { project: string; slot: number; amountUnits: string; network: string; wallet: string; transactionUrl: string }) {
+export function refundConfirmedEmail(input: { project: string; slot: number; amountUnits: string; network: string; wallet: string; transactionUrl: string; manual?: boolean }) {
   return {
     subject: 'Your Devcon sponsorship refund is confirmed',
     body: `Hey ${input.project},
 
-Your full refund for Slot ${slotText(input.slot)} has been confirmed on-chain.
+Your full refund for Slot ${slotText(input.slot)} ${input.manual?'has been marked complete by Manish.':'has been confirmed on-chain.'}
 
 Refund amount: ${amountText(input.amountUnits)} USDC
 Network: ${input.network}
