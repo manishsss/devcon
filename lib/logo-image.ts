@@ -21,7 +21,7 @@ export async function validateLogo(file:File,maxUploadMB:number){
   }else throw new Error('Only PNG and JPG logos are supported. SVG is not accepted.');
   dimensions(image.width,image.height);
   // Fresh RGBA encoding strips metadata, scripts, trailing content and source chunks.
-  const normalized=new PNG({width:image.width,height:image.height});normalized.data=Buffer.from(image.data);
+  const normalized={width:image.width,height:image.height,data:Buffer.from(image.data),gamma:0} as PNG;
   const encoded=PNG.sync.write(normalized,{colorType:6,bitDepth:8});
   if(encoded.length>5*1048576)throw new Error('Normalized logo is too large.');
   return {bytes:new Uint8Array(encoded),mime:'image/png'};

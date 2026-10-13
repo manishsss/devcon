@@ -1,8 +1,8 @@
 # Devcon sponsorship handoff
 
 ## Current source
-GitHub mirrors the public site's application source through version 99.
-Published Sites commit: 64012974233e375784f1ae269fdfaea61755b0d9 (October 13, 2026).
+GitHub mirrors the public site's application source through version 100.
+Published Sites commit: 0928a6cff625915c9f892f174787599ff42b2709 (October 13, 2026).
 This sync includes the QR checkout, current payment monitoring and verification,
 network selection, sponsor emails, site copy, and response latency improvements.
 Generated TypeScript cache remains excluded. Historical audit reports remain
@@ -15,7 +15,7 @@ ChatGPT Sites manages Cloudflare Workers, D1 binding DB and R2 binding BUCKET.
 The hosting manifest retains the existing public Site identity.
 GitHub source access does not grant access to managed storage or runtime secrets.
 Live database records, R2 uploads, API keys and runtime settings are not exported.
-This repository-only sync does not deploy or modify the public website.
+GitHub source synchronization is separate from Sites publication.
 
 ## Current campaign and checkout
 Eight positions start at 350/350/300/300/250/250/200/200 USD.
@@ -43,6 +43,15 @@ polling, site traffic and authenticated admin/maintenance checks drive monitorin
 Users should keep checkout open until confirmation. This is an unresolved
 operational limitation, not proof of unattended payment readiness.
 
+## Hosted PNG compatibility fix
+Version 100 fixes the reported "Class constructor Inflate cannot be invoked
+without 'new'" error during logo upload. The Vite alias for pngjs' sync-inflate
+must be retained: lib/png-sync-inflate.cjs uses the public bounded zlib API.
+The legacy constructor failure was reproduced in the Workers runtime.
+The fixed Workers test passes four PNG color types and JPEG normalization, and
+still rejects corrupt PNG and SVG. Run node tests/logo-worker.mjs for this
+runtime-specific regression; ordinary Node tests alone did not catch the defect.
+
 ## Validation
 Use Node.js 22.13+; Node 24 was used for the latest local checks.
 Run npm test, npm run typecheck and npm run build.
@@ -53,9 +62,9 @@ The owner confirmed the address QR scans correctly in their wallet.
 These checks do not constitute an end-to-end real-funds payment or refund test.
 
 ## Working on this repo
-Deploy only when the user requests website changes or publication. This task
-authorizes repository updates only. Do not change Site runtime settings, deploy,
-migrate production data or send funds as part of this sync.
+Deploy only when the user requests website changes or publication. When asked
+to update only the repository, do not change Site runtime settings, deploy,
+migrate production data or send funds.
 Use the Sites workflow for separately authorized hosted changes.
 security-staging-changes.patch is a historical snapshot, not an unapplied
 upgrade; do not apply it over the current source.
