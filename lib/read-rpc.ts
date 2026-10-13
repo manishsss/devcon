@@ -10,11 +10,13 @@ export const RPC_ALTERNATES: Record<number, string[]> = {
 };
 const READ_METHODS = new Set(['eth_chainId','eth_call','eth_blockNumber','eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByNumber','eth_getLogs']);
 
-async function request(endpoint: string, method: string, params: unknown[],budget?:()=>Promise<void>) {
+async function request(endpoint: string, method: string, params: unknown[],budget?:()=>Promise<void>,signal?:AbortSignal) {
+  signal?.throwIfAborted();
   if(budget)await budget();
+  signal?.throwIfAborted();
   const response = await fetch(endpoint, {
     method:'POST', headers:{'content-type':'application/json'},
-    body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}), signal:AbortSignal.timeout(4000),
+    body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}), signal:signal?AbortSignal.any([signal,AbortSignal.timeout(4000)]):AbortSignal.timeout(4000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const body = await response.json() as {jsonrpc?:string;id?:number;result?:unknown;error?:{code?:number}};
@@ -22,6 +24,33 @@ async function request(endpoint: string, method: string, params: unknown[],budge
   if (body.jsonrpc!=='2.0' || body.id!==1 || !Object.hasOwn(body,'result')) throw new Error('Invalid RPC response');
   if (body.result===null && !['eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByNumber'].includes(method)) throw new Error('Missing RPC result');
   return body.result;
+}
+
+// Checkout preparation only. Verification continues to use the sequential reader.
+// A slow primary no longer delays trying a chain-verified alternate.
+export async function readFastRpc(config:{rpc:string;chainId:number},method:string,params:unknown[],budget?:()=>Promise<void>){
+  if(!['eth_chainId','eth_call','eth_blockNumber'].includes(method))throw new Error('Only checkout network preparation reads are allowed.');
+  const network=PAYMENT_NETWORKS.find(item=>item.id===config.chainId);
+  if(!network)throw new Error('Unsupported checkout network.');
+  const endpoints=[...new Set([config.rpc,...RPC_ALTERNATES[network.id]])];
+  const controller=new AbortController();
+  let rateLimitReject!:(error:unknown)=>void;
+  const rateLimit=new Promise<never>((_,reject)=>{rateLimitReject=reject;});
+  const attempts=endpoints.map(async(endpoint,index)=>{
+    try{
+      if(index)await new Promise<void>((resolve,reject)=>{
+        const stop=()=>{clearTimeout(timer);reject(new DOMException('Cancelled','AbortError'));};
+        const timer=setTimeout(()=>{controller.signal.removeEventListener('abort',stop);resolve();},index*250);
+        controller.signal.addEventListener('abort',stop,{once:true});
+      });
+      const chain=await request(endpoint,'eth_chainId',[],budget,controller.signal);
+      if(Number(chain)!==network.id)throw new Error('Wrong RPC chain');
+      return method==='eth_chainId'?chain:await request(endpoint,method,params,budget,controller.signal);
+    }catch(error){if((error as any)?.status===429){rateLimitReject(error);controller.abort();}throw error;}
+  });
+  try{return await Promise.race([Promise.any(attempts),rateLimit]);}
+  catch(error){if((error as any)?.status===429)throw error;throw new Error(`${network.name} verification is temporarily unavailable across its providers. Please retry. Your payment status has not changed.`);}
+  finally{controller.abort();}
 }
 
 export async function readRpc(config: {rpc:string;chainId?:number}, method:string, params:unknown[],budget?:()=>Promise<void>) {

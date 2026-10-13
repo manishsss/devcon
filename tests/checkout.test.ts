@@ -316,3 +316,18 @@ test('payment-disabled staging cannot create wallet or QR reservations',async()=
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM payments').get()!.n,0);
  }finally{delete (env as any).PAYMENTS_DISABLED;delete (env as any).QR_CHECKOUT_ENABLED;}
 });
+
+test('QR prewarming creates no reservation and a warmed reservation still uses server pricing',async()=>{
+ (env as any).QR_CHECKOUT_ENABLED='1';
+ const rpcFetch=globalThis.fetch;let calls=0;
+ globalThis.fetch=async(input,init)=>{calls++;return rpcFetch(input,init);};
+ try{
+  const warm=()=>POST(new Request('https://site.test/api/checkout/prepare',{method:'POST',headers:{origin:'https://site.test','content-type':'application/json'},body:JSON.stringify({chainId:8453,token:'USDC'})}),{params:Promise.resolve({path:['checkout','prepare']})});
+  assert.equal((await warm()).status,200);const preparedCalls=calls;
+  assert.ok(preparedCalls>0);assert.equal(db.sqlite.prepare('SELECT COUNT(*) n FROM sponsorships').get()!.n,0);assert.equal(uploads.size,0);
+  assert.equal((await warm()).status,200);assert.equal(calls,preparedCalls);
+  const body=form();body.set('paymentMethod','QR');body.set('amount','1');
+  const reserved=await post('reserve',body);assert.equal(reserved.status,200);
+  assert.equal(((await reserved.json()) as any).claimPrice,'350');assert.equal(calls,preparedCalls+2,'reservation must still read a fresh chain identity and block head');
+ }finally{delete (env as any).QR_CHECKOUT_ENABLED;}
+});

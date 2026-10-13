@@ -4,7 +4,7 @@ import { queueSponsorCancellation } from '@/lib/sponsor-cancellation';
 import { recordManualRefund } from '@/lib/refund-confirmation';
 import { env, waitUntil } from 'cloudflare:workers';
 import {paymentPreflight,verifyPayment,monitorPayments} from '@/lib/payment';
-import {admin,closeManualAuction,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
+import {admin,checkoutRpc,closeManualAuction,config,db,defaults,dispatchNotification,initialize,inventory,positions,ready,rpc,settleCampaign,sendSponsorEmail,validateConfig} from '@/lib/campaign';
 import {AUCTION_DURATION_MS,USDC_SCALE,claimPriceUnits,formatUsdcUnits,initialPriceUnits} from '@/lib/auction';
 import { paymentRail, QR_PAYMENT_NETWORKS } from '@/lib/payment-networks';
 import { checkoutDigest,createAuthorization,verifyAuthorization } from '@/lib/checkout-authorization';
@@ -12,7 +12,8 @@ import { maintenanceAuthorized,monitoringHealth } from '@/lib/payment-monitor';
 import { boundedRequest,requestBudget } from '@/lib/abuse';
 import { validateLogo } from '@/lib/logo-image';
 import { allocateQrAmount,qrAmount } from '@/lib/qr-payment';
-import { checkoutNetwork } from '@/lib/checkout-network';
+import { checkoutNetwork,checkoutNetworkIdentity,checkoutBlock } from '@/lib/checkout-network';
+import {qrPreparationCache} from '@/lib/qr-preparation';
 
 export const dynamic='force-dynamic';
 const json=(value:any,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store'}});
@@ -59,7 +60,7 @@ async function route(request:Request,context:any){
       return json(await monitorPayments('scheduler'));
     }
     if(request.method!=='GET'&&!sameOrigin(request))return json({error:'Invalid request origin.'},403);
-    const requestLimits:Record<string,number>={'checkout/authorize':6,reserve:6,verify:90,'checkout/preflight':30,'checkout/cancel':30};
+    const requestLimits:Record<string,number>={'checkout/prepare':6,'checkout/authorize':6,reserve:6,verify:90,'checkout/preflight':30,'checkout/cancel':30};
     if(request.method==='POST'&&requestLimits[endpoint]){
       await requestBudget(db(),request,endpoint,requestLimits[endpoint]);
       if(!['reserve','checkout/authorize'].includes(endpoint))request=await boundedRequest(request,16384);
@@ -72,6 +73,24 @@ async function route(request:Request,context:any){
       waitUntil(monitorPayments().catch(()=>{console.error('Background inventory monitor failed; payment retries remain available.');}));
       const response=json(current);
       response.headers.set('Server-Timing',`inventory;dur=${(performance.now()-started).toFixed(1)}`);
+      return response;
+    }
+
+    if(request.method==='POST'&&endpoint==='checkout/prepare'){
+      const started=performance.now(),body=await request.json() as {chainId?:unknown;token?:unknown};
+      const {network,asset}=paymentRail(body.chainId,body.token);
+      if((env as any).QR_CHECKOUT_ENABLED!=='1'||!QR_PAYMENT_NETWORKS.some(item=>item.id===network.id))return json({error:'Choose a supported QR payment network.'},400);
+      const current=await config();
+      if(!ready(current))return json({error:'Payment preparation is unavailable.'},503);
+      const rail={rpc:current.rpcByChain[network.id],chainId:network.id};
+      const key=JSON.stringify([rail.rpc,network.id,asset.address.toLowerCase(),asset.decimals]);
+      let loaded=false;
+      await qrPreparationCache((env as any).DB).get(key,()=>{
+        loaded=true;
+        return checkoutNetworkIdentity((method,params)=>checkoutRpc(rail,method,params),{chainId:network.id,tokenAddress:asset.address,decimals:asset.decimals});
+      });
+      const response=json({ready:true});
+      response.headers.set('Server-Timing',`prepare;dur=${(performance.now()-started).toFixed(1)},qr-cache;desc="${loaded?'fresh':'reused'}"`);
       return response;
     }
 
@@ -225,7 +244,16 @@ async function route(request:Request,context:any){
       if(endpoint==='checkout/authorize')return json(await createAuthorization({wallet:values.wallet,digest,origin,treasury:current.treasury,price:priceDisplay,project:values.project,slot:slotNumber,network:network.name,chainId:network.id,expiresAt:Math.min(Date.now()+300000,campaign.ends_at??Infinity)}));
       const authorizationId=qr?null:await verifyAuthorization(form,values.wallet,digest);
       if(!qr&&await db().prepare('SELECT 1 FROM qr_payment_amounts WHERE chain_id=? AND token_contract=? AND treasury=? AND amount_units=?').bind(network.id,asset.address.toLowerCase(),current.treasury.toLowerCase(),requiredUnits.toString()).first())throw new Error('This amount is reserved for QR matching. Choose another spot.');
-      const startBlock=await checkoutNetwork((method,params)=>rpc(rail,method,params),{chainId:network.id,tokenAddress:asset.address,decimals:asset.decimals,wallet:values.wallet,requiredUnits,qr});
+      let startBlock:number;
+      if(qr){
+        const [,head]=await Promise.all([
+          qrPreparationCache((env as any).DB).get(JSON.stringify([rail.rpc,network.id,asset.address.toLowerCase(),asset.decimals]),()=>checkoutNetworkIdentity((method,params)=>checkoutRpc(rail,method,params),{chainId:network.id,tokenAddress:asset.address,decimals:asset.decimals})),
+          checkoutRpc(rail,'eth_blockNumber',[]),
+        ]);
+        startBlock=checkoutBlock(head);
+      }else{
+        startBlock=await checkoutNetwork((method,params)=>rpc(rail,method,params),{chainId:network.id,tokenAddress:asset.address,decimals:asset.decimals,wallet:values.wallet,requiredUnits,qr:false});
+      }
       const sponsorId=crypto.randomUUID(),sponsorshipId=crypto.randomUUID(),paymentId=crypto.randomUUID(),secret=crypto.randomUUID();
       const createdAt=Date.now(),reservedUntil=Math.min(createdAt+current.reservationMinutes*60000,campaign.ends_at??Infinity),logoKey=sponsorId;
       if(reservedUntil<=createdAt)return json({error:'The auction is closed.'},409);

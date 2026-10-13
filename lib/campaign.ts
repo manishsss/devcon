@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { env } from 'cloudflare:workers';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
-import { readRpc } from './read-rpc';
+import { readRpc,readFastRpc } from './read-rpc';
 import { fencedDatabase } from './verification-scope';
 import { consumeBudget } from './abuse';
 import { PAYMENT_NETWORKS } from './payment-networks';
@@ -285,6 +285,13 @@ export async function rpc(c:any,method:string,params:any[]){
     await consumeBudget((env as any).DB,'rpc:global',1800);
     await consumeBudget((env as any).DB,`rpc:chain:${Number(c.chainId)}`,900);
   }) as Promise<any>;
+}
+
+export async function checkoutRpc(c:any,method:string,params:unknown[]){
+  return readFastRpc(c,method,params,async()=>{
+    await consumeBudget((env as any).DB,'rpc:global',1800);
+    await consumeBudget((env as any).DB,`rpc:chain:${Number(c.chainId)}`,900);
+  });
 }
 
 export function validateConfig(c:any){

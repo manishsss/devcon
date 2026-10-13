@@ -90,9 +90,22 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, qrPayme
   const [chainId,setChainId]=useState(8453);
   const [selectedToken,setSelectedToken]=useState('USDC');
   const [paymentMethod,setPaymentMethod]=useState<'WALLET'|'QR'>('WALLET');
+  const qrPreparation=useRef<{key:string;started:number;task:Promise<void>}|null>(null);
+  function prepareQrNetwork(){
+    if(paymentMethod!=='QR'||!QR_PAYMENT_NETWORKS.some(item=>item.id===chainId))return Promise.resolve();
+    const key=`${chainId}:${selectedToken}`,previous=qrPreparation.current;
+    if(previous?.key===key&&Date.now()-previous.started<15000)return previous.task;
+    const task=fetch('/api/checkout/prepare',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chainId,token:selectedToken})}).then(()=>{}).catch(()=>{});
+    qrPreparation.current={key,started:Date.now(),task};return task;
+  }
 
   const network=PAYMENT_NETWORKS.find(item=>item.id===chainId)!;
   const [reservation, setReservation] = useState<Reservation | null>(null);
+  useEffect(()=>{
+    if(open&&!reservation&&paymentsReady&&paymentMethod==='QR')void prepareQrNetwork();
+    // Prepare while the form is filled; reservation still validates all details.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[open,reservation?.id,paymentsReady,paymentMethod,chainId,selectedToken]);
   const selectableNetworks=paymentMethod==='QR'?QR_PAYMENT_NETWORKS:PAYMENT_NETWORKS;
   useEffect(()=>{
     if(!reservation&&paymentMethod==='QR'&&!QR_PAYMENT_NETWORKS.some(item=>item.id===chainId))setChainId(8453);
@@ -463,7 +476,7 @@ export default function SponsorshipCheckout({ open, slot, paymentsReady, qrPayme
                 {paymentMethod!=='QR' && <button type="button" className="wallet-connect" onClick={connectWallet}><Wallet size={16} /> {wallet ? `${walletName || 'WALLET'} · ${truncate(wallet)}` : 'CONNECT WALLET TO FILL ADDRESS'}</button>}
                 <label className="file-field">LOGO UPLOAD *<input name="logo" type="file" accept="image/png,image/jpeg" required /><span>PNG or JPG · max 5 MB · max 2048px per side / 1 megapixel.</span></label>
                 <label>SHORT PROJECT DESCRIPTION <span>OPTIONAL</span><textarea name="description" rows={3} maxLength={500} placeholder="A short line about what you're building." /></label>
-                <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required /><span>I agree to the <a href="/terms" target="_blank" rel="noopener noreferrer">Terms &amp; Conditions</a> and understand the sponsorship rules.</span></label>
+                <label className="terms-row"><input type="checkbox" name="terms" value="accepted" required onChange={event=>{if(event.target.checked)void prepareQrNetwork();}} /><span>I agree to the <a href="/terms" target="_blank" rel="noopener noreferrer">Terms &amp; Conditions</a> and understand the sponsorship rules.</span></label>
                 <button className="button primary checkout-primary" disabled={busy || !paymentsReady || !claimsOpen || !slot?.canClaim}>{busy ? (paymentMethod==='QR'?'CREATING PAYMENT…':'AUTHORIZE IN YOUR WALLET…') : paymentMethod==='QR'?'CONTINUE TO QR PAYMENT':'SIGN & CONTINUE TO PAYMENT'}</button>
               </form>
             ) : (

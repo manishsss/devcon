@@ -1,8 +1,8 @@
 # Devcon sponsorship handoff
 
 ## Current source
-GitHub mirrors the public site's application source through version 100.
-Published Sites commit: 0928a6cff625915c9f892f174787599ff42b2709 (October 13, 2026).
+GitHub mirrors the public site's application source through version 101.
+Published Sites commit: 7a73ff2b801a36e90d03c1115370691e93a7a397 (October 13, 2026).
 This sync includes the QR checkout, current payment monitoring and verification,
 network selection, sponsor emails, site copy, and response latency improvements.
 Generated TypeScript cache remains excluded. Historical audit reports remain
@@ -52,10 +52,22 @@ The fixed Workers test passes four PNG color types and JPEG normalization, and
 still rejects corrupt PNG and SVG. Run node tests/logo-worker.mjs for this
 runtime-specific regression; ordinary Node tests alone did not catch the defect.
 
+## QR preparation latency
+Version 101 prepares QR chain/token identity when QR is selected and renews
+preparation when terms are checked. Successful checks share a 20-second cache
+keyed by database binding and exact RPC/chain/token configuration. Failures are
+not cached. Every reservation still reads a fresh, chain-verified block head;
+slot prices, unique amount allocation and slot locking remain uncached.
+Checkout preparation tries verified alternate RPC providers after 250ms.
+Payment/refund verification keeps its existing reader. Request/RPC budgets
+still apply. Preparation creates no sponsorship or payment record.
+Live preparation returned HTTP 200, with server work around 1.2s initially and
+0.4s on reuse. These are preparation timings, not end-to-end reservation timings.
+
 ## Validation
 Use Node.js 22.13+; Node 24 was used for the latest local checks.
 Run npm test, npm run typecheck and npm run build.
-The latest application suite passed 140 tests; type checking, production build
+The latest application suite passed 146 tests; type checking, production build
 and seven automatic discovery checks passed. Public HTML was verified to contain
 all eight ready claim buttons. QR image decoding matched the treasury address.
 The owner confirmed the address QR scans correctly in their wallet.
